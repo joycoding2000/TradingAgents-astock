@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [0.2.17] — 2026-07-10
+
+两个健壮性修复，无破坏性变更、无新依赖。
+
+### 修复
+- **fpdf 包损坏导致 Web UI 启动即崩（#72）**：`web/pdf_export.py` 顶部的 `from fpdf import FPDF` 一旦失败（fpdf2 卸载不干净留下 namespace 残包、或 pyfpdf 1.x 没有 `fpdf.enums`），`web/app.py` 在 import 链上直接崩溃、整个应用起不来。现改为守卫式导入：fpdf 坏了只禁用 PDF 导出（Markdown 导出照常），点击 PDF 按钮时给出确切修复命令 `pip uninstall -y fpdf fpdf2 && pip install "fpdf2>=2.8.0"`。
+- **LLM 把行业名当股票代码时报错信息不可自纠（#76）**：弱模型做工具调用时偶尔把行业/概念名（如 002174 游族网络所属行业「游戏」）当 `ticker` 传入，旧报错「找不到股票 '游戏'，请检查名称是否正确」让用户困惑（自己输入的明明是 002174）、也无法引导模型纠正。新报错写明「ticker 只接受 6 位代码或完整股票名称，行业/概念/板块名无效」，模型读到 ToolMessage 后可在下一次调用自我纠正。
+
+### 测试
+- 实测模拟损坏 fpdf（`sys.modules` 注入空 namespace 包，复现 #72 同款 `cannot import name 'FPDF' from 'fpdf' (unknown location)`）：`web.pdf_export` import 成功、`generate_markdown` 正常出稿、`generate_pdf` 抛带修复指引的 `PDFExportError`。
+- `resolve_ticker` 回归：`002174`/`600519.SH`/`贵州茅台` 正常解析；`游戏` 触发新报错文案。
+- `tests/test_pdf_export.py` + `test_safe_ticker_component.py` + `test_stock_display.py` + `test_web_history.py` + `test_astock_sina_supplement.py` 共 25 项通过（2 项 pdf 字体用例在本机因 fpdf2 2.8.4 < 2.8.6 环境原因失败，HEAD 上同样失败，与本次改动无关）。
+
 ## [0.2.16] — 2026-06-28
 
 本版采纳一个社区贡献的批量样例脚本 + 文档补充，无核心代码改动。

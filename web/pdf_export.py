@@ -9,19 +9,30 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import fpdf as _fpdf_mod
-from fpdf import FPDF
-from fpdf.enums import WrapMode
-
-from web.stock_display import normalize_stock_mentions, stock_display_label
-
-
 # fpdf2 (maintained fork) and the abandoned pyfpdf 1.x BOTH import as `fpdf`, and
 # installing both leaves whichever was installed last on disk. pyfpdf 1.x encodes
 # every page as latin-1, so any Chinese character raises a cryptic
 # `UnicodeEncodeError: 'latin-1' codec can't encode` deep inside the library
-# (issue #54). Detect the wrong library up front and tell the user exactly how to
-# fix it, instead of letting the PDF blow up mid-render.
+# (issue #54). Worse: a broken/half-uninstalled fpdf (or pyfpdf 1.x, which has no
+# `fpdf.enums`) fails right here at import time, which used to take down the whole
+# Streamlit app on startup (issue #72). Guard the import so a bad fpdf install only
+# disables PDF export — Markdown export keeps working — and the user gets an exact
+# fix command when they click the PDF button.
+try:
+    import fpdf as _fpdf_mod
+    from fpdf import FPDF
+    from fpdf.enums import WrapMode
+
+    _FPDF_IMPORT_ERROR: Exception | None = None
+except ImportError as exc:
+    _fpdf_mod = None
+    FPDF = object  # placeholder base class; generate_pdf() refuses before instantiation
+    WrapMode = None
+    _FPDF_IMPORT_ERROR = exc
+
+from web.stock_display import normalize_stock_mentions, stock_display_label
+
+
 _FPDF_VERSION = getattr(_fpdf_mod, "__version__", None) or getattr(_fpdf_mod, "FPDF_VERSION", "0")
 
 _PDF_FONT_ENV = "TRADINGAGENTS_PDF_FONT"
@@ -132,6 +143,13 @@ class PDFExportError(RuntimeError):
 
 
 def _ensure_fpdf2() -> None:
+    if _FPDF_IMPORT_ERROR is not None:
+        raise PDFExportError(
+            f"fpdf 库导入失败（{_FPDF_IMPORT_ERROR}）。环境里的 fpdf 包可能已损坏，"
+            "或残留的旧版 pyfpdf 与 fpdf2 冲突（issue #72）。请执行：\n"
+            '    pip uninstall -y fpdf fpdf2 && pip install "fpdf2>=2.8.0"\n'
+            "重装后重启应用，或改用「下载 Markdown」导出。"
+        )
     try:
         major = int(str(_FPDF_VERSION).split(".")[0])
     except (ValueError, IndexError):
