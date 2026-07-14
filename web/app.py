@@ -154,6 +154,58 @@ st.markdown(
 )
 
 
+# ── Access gate ──────────────────────────────────────────────────────────────
+# 可选访问口令：仅在环境变量 ACCESS_TOKEN 设了非空值时启用登录页。
+# 未设则直接放行（本地开发与其他部署无感知），保持原行为。
+_ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "").strip()
+
+
+def _render_login_gate() -> bool:
+    """已授权返回 True；未授权则渲染登录页并返回 False。"""
+    if not _ACCESS_TOKEN:
+        return True  # 未配置口令，不启用登录
+    if st.session_state.get("ta_authenticated"):
+        return True  # 同一会话已登录，放行
+
+    st.markdown(
+        """
+        <div style="
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; min-height: 70vh; text-align: center;
+        ">
+            <div style="font-size: 4rem; margin-bottom: 1rem;">📈</div>
+            <div style="font-size: 2.2rem; font-weight: 900; margin-bottom: 0.5rem;">
+                <span style="color: #ff5a1f;">Trading</span><span style="color: #f5f1eb;">Agents</span><span style="color: #f5f1eb;">-</span><span style="color: #ff5a1f;">Astock</span>
+            </div>
+            <div style="color: #888; font-size: 0.95rem; margin-bottom: 2rem;">
+                请输入访问口令以继续
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        pwd = st.text_input(
+            "访问口令", type="password", label_visibility="collapsed",
+            placeholder="请输入访问口令",
+        )
+        if st.button("进 入", type="primary", use_container_width=True):
+            import hmac
+            if hmac.compare_digest(pwd.strip(), _ACCESS_TOKEN):
+                st.session_state["ta_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("口令错误，请重试")
+    return False
+
+
+# 未授权则停在登录页，不渲染后续 sidebar / 主界面
+if not _render_login_gate():
+    st.stop()
+
+
 # ── Build config ─────────────────────────────────────────────────────────────
 
 def _build_config() -> dict:

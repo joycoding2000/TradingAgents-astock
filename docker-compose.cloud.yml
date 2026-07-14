@@ -1,0 +1,32 @@
+# 阿里云部署专用：复用宿主机 nginx 反向代理，web 容器仅监听本机 127.0.0.1。
+# 不影响本地 docker-compose.yml（start-web.bat 本地直连 8501 的用法不受影响）。
+#
+# 用法：
+#   docker compose -f docker-compose.cloud.yml up -d --build
+# 访问：
+#   http://<服务器公网IP>:8080   （经宿主机 nginx + Basic Auth）
+# 关键：
+#   ports 绑 127.0.0.1:8501:8501 —— 公网扫描 8501 访问不到，必须经 nginx:8080 过认证。
+
+services:
+  web:
+    build: .
+    env_file:
+      - .env
+    entrypoint: ["streamlit"]
+    command:
+      - run
+      - web/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    ports:
+      - "127.0.0.1:8501:8501"   # 仅本机监听，公网扫不到，必须经 nginx:8080 认证
+    volumes:
+      - tradingagents_data:/home/appuser/.tradingagents
+      - .:/home/appuser/app          # 挂载宿主机代码，改代码后 up -d 即生效，无需 rebuild
+    restart: unless-stopped
+
+volumes:
+  tradingagents_data:

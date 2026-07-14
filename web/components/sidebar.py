@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import os
 
 import streamlit as st
 
@@ -133,6 +134,12 @@ def _render_analysis_controls(raw_ticker: str, trade_date_value: date) -> None:
 def _render_llm_config() -> None:
     """Render LLM provider and model selection controls."""
 
+    # 默认 provider/model 从环境变量读（.env 配 DEFAULT_LLM_PROVIDER 等），
+    # 首次进入会话时默认选中，避免每次登录都要手动重选。已选过则尊重用户选择。
+    env_provider = os.getenv("DEFAULT_LLM_PROVIDER", "").strip().lower()
+    if env_provider and env_provider in _PROVIDER_KEYS and "llm_provider_idx" not in st.session_state:
+        st.session_state["llm_provider_idx"] = _PROVIDER_KEYS.index(env_provider)
+
     provider_idx = st.selectbox(
         "LLM 供应商",
         range(len(_PROVIDERS)),
@@ -151,6 +158,13 @@ def _render_llm_config() -> None:
         quick_values = [value for _, value in quick_options]
         deep_labels = [label for label, _ in deep_options]
         deep_values = [value for _, value in deep_options]
+
+        env_quick = os.getenv("DEFAULT_QUICK_MODEL", "").strip()
+        if env_quick and env_quick in quick_values and "quick_model_idx" not in st.session_state:
+            st.session_state["quick_model_idx"] = quick_values.index(env_quick)
+        env_deep = os.getenv("DEFAULT_DEEP_MODEL", "").strip()
+        if env_deep and env_deep in deep_values and "deep_model_idx" not in st.session_state:
+            st.session_state["deep_model_idx"] = deep_values.index(env_deep)
 
         quick_idx = st.selectbox(
             "快速思考模型",
@@ -200,9 +214,6 @@ def render_sidebar() -> None:
             <span style="font-size:2rem; font-weight:800; color:#ff5a1f;">Trading</span><span style="font-size:2rem; font-weight:800; color:#f5f1eb;">Agents</span><span style="font-size:2rem; font-weight:800; color:#f5f1eb;">-</span><span style="font-size:2rem; font-weight:800; color:#ff5a1f;">Astock</span>
             <div style="font-size:0.85rem; color:#888; margin-top:0.2rem;">
                 A股多Agent投研系统
-            </div>
-            <div style="font-size:0.7rem; color:#555; margin-top:0.3rem;">
-                by <a href="https://github.com/simonlin1212" style="color:#ff5a1f; text-decoration:none;">simonlin1212</a>
             </div>
         </div>
         """,
