@@ -127,8 +127,27 @@ docker compose -f docker-compose.cloud.yml up -d --build
 | 查看日志 | `docker compose -f docker-compose.cloud.yml logs -f web` |
 | 重建容器（改 .env 后） | `docker compose -f docker-compose.cloud.yml up -d` |
 | 停止 | `docker compose -f docker-compose.cloud.yml down` |
-| 更新代码 | `git pull && docker compose -f docker-compose.cloud.yml up -d --build` |
 | 改访问口令 | 改 `.env` 的 `ACCESS_TOKEN` 后 `docker compose -f docker-compose.cloud.yml up -d` |
+
+### 一键更新脚本（推荐）
+
+`scripts/update-server.sh` 封装了"同步代码 + 重启容器 + 打印日志"全流程。改完代码在**项目根目录**执行：
+
+```bash
+# 首次使用前设置服务器地址（写入 ~/.bashrc 永久生效）
+export TA_SERVER=root@你的服务器IP
+
+bash scripts/update-server.sh          # 改了 Python 代码 -> restart web
+bash scripts/update-server.sh --env    # 改了 .env         -> up -d 重建容器
+bash scripts/update-server.sh --build  # 改了依赖          -> up -d --build 重建镜像
+```
+
+**关键区别**（记性不好重点记这条）：
+- **代码变了** → 默认（`restart web`，快，几秒）
+- **.env 变了** → `--env`（必须 `up -d`，`restart` 不重读 env_file 是常见坑）
+- **依赖变了** → `--build`（`up -d --build`，重建镜像几分钟）
+
+脚本不硬编码服务器地址（避免泄露到公开 repo），从 `TA_SERVER` 环境变量读，未设会报错退出。rsync 优先（增量），Windows 无 rsync 时自动回退 tar 全量打包。改了 nginx 配置仍需手动（见第 4 步）。
 
 ---
 
