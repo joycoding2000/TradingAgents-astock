@@ -272,6 +272,12 @@ _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 # 不限流（实测不封 IP 或风控极弱）。批量任务可调大 EM_MIN_INTERVAL 进一步降速。
 _EM_SESSION = _requests.Session()
 _EM_SESSION.headers.update({"User-Agent": _UA})
+# v0.2.22: 阿里云等 IDC IP 被东财 push2/push2his 封禁（建连后 RemoteDisconnected），
+# 资金流 fflow、行业对比 clist 等全失败。设 EM_HTTP_PROXY 环境变量让东财请求走代理
+# 出口绕过（国内住宅/移动 IP 最佳，IDC IP 可能也被封）。不设则直连，本地开发无影响。
+_em_proxy = os.environ.get("EM_HTTP_PROXY", "").strip()
+if _em_proxy:
+    _EM_SESSION.proxies = {"http": _em_proxy, "https": _em_proxy}
 # 两次东财请求最小间隔(秒)；批量多 Agent 场景可设环境变量 EM_MIN_INTERVAL=1.5~2 降速。
 _EM_MIN_INTERVAL = float(os.environ.get("EM_MIN_INTERVAL", "1.0"))
 _em_last_call = [0.0]  # 模块级上次东财请求时间戳

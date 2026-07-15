@@ -220,3 +220,6 @@ __marimo__/
 
 # Playwright MCP temp (浏览器工具残留，非项目文件)
 .playwright-mcp/
+
+# Claude Code 私有文件（plan/skills/cache，非项目文件）
+.claude/

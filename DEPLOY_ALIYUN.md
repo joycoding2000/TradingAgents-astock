@@ -151,6 +151,45 @@ bash scripts/update-server.sh --build  # 改了依赖          -> up -d --build 
 
 ---
 
+## 东财 push2 代理配置（云部署重要）
+
+**问题**：阿里云等 IDC 服务器的 IP 会被东方财富 push2 行情接口封禁（`push2.eastmoney.com` / `push2his.eastmoney.com`，建连后 `RemoteDisconnected`），导致：
+- 游资追踪师"个股主力资金净流入"缺失（`get_fund_flow`）
+- 基本面/游资"行业横向对比"失败（`get_industry_comparison`）
+
+`datacenter-web`（龙虎榜/股东/解禁）、mootdx/新浪（K 线）、腾讯（PE/PB）等非 push2 源不受影响。本地开发无此问题（IP 非 IDC）。
+
+**解决**：在服务器 `.env` 设 `EM_HTTP_PROXY` 让东财请求走代理出口绕过：
+
+```bash
+cd /opt/TradingAgents-astock
+vi .env
+# 加一行（替换为你的代理地址）：
+EM_HTTP_PROXY=http://user:pass@proxy.example.com:8080
+```
+
+部署（`.env` 变了必须 `--env` 重建容器重读）：
+
+```bash
+bash scripts/update-server.sh --env
+```
+
+**代理要求**：
+- 国内**住宅/移动 IP** 代理最佳（IDC IP 可能也被东财封）
+- HTTP/HTTPS 代理均可，支持账号密码认证
+- 代理需自备（如快代理、芝麻代理、阶云等付费住宅代理）
+
+**验证**：进容器实测资金流接口应返回数据：
+
+```bash
+docker exec tradingagents-astock-web-1 python -c "
+from tradingagents.dataflows import a_stock
+print(a_stock.get_fund_flow('601689','2026-07-15')[:200])
+"
+```
+
+未配代理时，资金流/行业对比仍缺失，但门控矛盾修正与 prompt 假缺失消除（v0.2.22）独立生效，不再出现"C vs A 矛盾"和龙虎榜误标。
+
 ## 常见问题
 
 **Q: 访问 8080 一直转圈 / 显示 "Please wait"？**

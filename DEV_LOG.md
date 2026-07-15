@@ -514,6 +514,7 @@ pyproject.toml:
 - ✅ **Week 6 MiniMax 集成** — factory.py + openai_client.py + model_catalog.py + README.md 四文件改动,MiniMax 成为推荐供应商
 - ✅ **Week 6 E2E 实战验证** — 300750 宁德时代(Hold, 16.3min) + 002594 比亚迪(Hold, 14.8min),MiniMax-M2.7 全链路通过,案例归档到 `examples/cases/`
 - ✅ **Week 7 Web UI** — Streamlit 可视化界面：一键分析 + 12 阶段实时进度 + 7 报告展示 + 多空/风控辩论 Tabs + PDF 导出 + 历史记录(10 文件 + 2 配置)
+- ✅ **v0.2.19~0.2.22 数据质量门控持续修复** - v0.2.19/0.2.20 修财报三表/概念板块/股东接口(issues/006/007)；v0.2.21 修股价对齐+_em_get重试+insider三段(issues/008 Week5过时快照勘误)；v0.2.22 修门控C vs A矛盾(硬检查不再机械判C+LLM复审喂硬检查结果收口)+push2 IDC封禁代理支持(EM_HTTP_PROXY)+prompt假缺失消除(issues/009)。全量 157 passed。
 
 ### 未开始
 

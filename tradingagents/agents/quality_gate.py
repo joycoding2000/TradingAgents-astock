@@ -54,10 +54,11 @@ def _hard_check_report(analyst_type: str, report: str) -> tuple:
     if not has_table:
         issues.append("缺少汇总表格")
     if missing_count > 0:
-        issues.append(f"{missing_count} 处数据缺失")
+        issues.append(f"{missing_count} 处数据缺失（关键性待 LLM 判断）")
 
-    if missing_count >= 3:
-        return ("C", "；".join(issues))
+    # v0.2.22: 不再因 [数据缺失] 数量直接判 C。硬检查无法判断缺失项是否在必采清单 /
+    # 是否关键，该语义判断交给 LLM 复审。硬检查只负责客观事实：有缺失 -> B（待 LLM
+    # 判断关键性后给最终级）。避免"基本面 3 处非必采缺失被判 C、LLM 复审判 A"的矛盾。
     if not has_table or missing_count > 0:
         return ("B", "；".join(issues) if issues else "基本合格")
 
@@ -65,9 +66,13 @@ def _hard_check_report(analyst_type: str, report: str) -> tuple:
 
 
 def _build_review_prompt(
-    reports: dict, trade_date: str, ticker: str
+    reports: dict, hard_results: dict, trade_date: str, ticker: str
 ) -> str:
-    """Build the LLM review prompt."""
+    """Build the LLM review prompt.
+
+    v0.2.22: 把硬检查结果（客观缺失清单）喂给 LLM，让 LLM 在已知硬检查事实的
+    基础上判断缺失项是否必采关键项，给出与硬检查一致的最终评级，消除 C vs A 矛盾。
+    """
     report_sections = []
     for analyst_type, field in REPORT_FIELDS.items():
         name = ANALYST_NAMES[analyst_type]
@@ -80,7 +85,18 @@ def _build_review_prompt(
 
     all_reports = "\n\n".join(report_sections)
 
+    hard_lines = []
+    for analyst_type, (grade, detail) in hard_results.items():
+        name = ANALYST_NAMES[analyst_type]
+        hard_lines.append(f"- {name}: [{grade}] {detail}")
+    hard_summary = "\n".join(hard_lines)
+
     return f"""你是数据质量审核员。以下是 7 位分析师对 {ticker} 在 {trade_date} 的研究报告。请逐一审核。
+
+## 硬检查结果（代码层客观事实，供参考，非最终评级）
+{hard_summary}
+
+---
 
 {all_reports}
 
@@ -107,11 +123,15 @@ def _build_review_prompt(
 **建议**: （如有数据缺失，提醒辩论阶段谨慎使用该报告）
 
 评级标准：
-- A: 必采清单全部覆盖，数据时效匹配，有汇总表格
+- A: 必采清单全部覆盖，数据时效匹配，有汇总表格。非必采的"特殊风险"项缺失（如股权质押/关联交易等系统未提供接口的项）不影响 A 级
 - B: 缺少 1-2 项非关键数据，整体可用
-- C: 缺少 3+ 项或有数据时效问题，需谨慎使用
+- C: 缺少 3+ 项**必采关键**数据或有数据时效问题，需谨慎使用
 - D: 大量缺失或主要为失败信息，可信度低
 - F: 报告为空或完全无效
+
+重要：硬检查已列出各分析师的客观缺失清单。请判断每处缺失是否属于**必采关键项**：
+- 若缺失的是非必采项（系统未提供接口的特殊风险项、或正常空结果如"近30日未上龙虎榜"），不应据此降级
+- 若你的评级与硬检查 grade 不一致，需在备注说明理由
 """
 
 
@@ -149,7 +169,9 @@ def create_quality_gate(llm):
         llm_review = ""
         if fail_count < 4:
             try:
-                review_prompt = _build_review_prompt(reports, trade_date, ticker)
+                review_prompt = _build_review_prompt(
+                    reports, hard_results, trade_date, ticker
+                )
                 response = llm.invoke(review_prompt)
                 llm_review = response.content
             except Exception as e:
@@ -158,8 +180,11 @@ def create_quality_gate(llm):
         summary = (
             f"## 数据质量门控结果\n\n"
             f"**标的**: {ticker} | **交易日**: {trade_date}\n\n"
+            f"> 硬检查为代码层客观事实清单（长度/表格/失败标记/缺失项计数），"
+            f"LLM 复审为最终评级（综合缺失项是否必采关键）。v0.2.22 起硬检查不再"
+            f"机械因 `[数据缺失]` 数量判 C，两层标准统一由 LLM 复审收口。\n\n"
             f"### 硬检查结果\n{hard_summary}\n\n"
-            f"### LLM 复审\n"
+            f"### LLM 复审（最终评级）\n"
             f"{llm_review if llm_review else '（跳过 — 多数报告未通过硬检查）'}\n"
         )
 

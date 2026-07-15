@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/simonlin1212/TradingAgents-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.2.21
+- **当前版本**: 0.2.22
 
 ## 架构
 
@@ -55,6 +55,9 @@ v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取
 
 ### 概念板块/股东数据接口迁移（v0.2.20 已修复）
 `get_concept_blocks`（百度 PAE `getrelatedblock` 返回 403 下线）迁移至东财 F10 `CoreConception/PageAjax`（ssbk 所属板块 + hxtc 核心题材）；`get_insider_transactions`（mootdx F10 仅返回"最新提示"栏目，通达信 TCP F10 无股东研究）迁移至东财 `RPT_F10_EH_HOLDERS`（按 END_DATE 降序取最新一期十大股东持股变化）。注意：东财 ssbk 不含板块当日涨幅（百度 PAE 原有），仅返回板块归属。`get_industry_comparison`（东财 push2 clist）代码无 bug，偶发缺失是东财连接/LLM 未调用，无需改代码。回归测试见 `tests/test_astock_interface_fix.py`，详见 `issues/007-interface-migration.md`。
+
+### 门控矛盾 + push2 IDC 封禁 + prompt 假缺失（v0.2.22 已修复）
+服务器跑 601689 门控暴露"基本面硬检查 [C] 3 处缺失 vs LLM 复审判 A"矛盾。三层修复：(1) `quality_gate.py` 硬检查不再因 `[数据缺失]` 数量 ≥3 机械判 C（改判 B，关键性交 LLM 判断）；`_build_review_prompt` 把硬检查结果喂给 LLM 复审，评级标准明确"非必采项缺失不影响 A 级"+ 要求与硬检查不一致需说明；消除两层矛盾。(2) `fundamentals_analyst.py` 股权质押/减持计划预披露/关联交易（系统无接口）从硬要求改为"系统未采集"说明，消除 3 处设计性缺失；`hot_money_tracker.py` 加标注规范，龙虎榜未上榜等正常空结果不标 `[数据缺失]`。(3) `a_stock.py` `_EM_SESSION` 读 `EM_HTTP_PROXY` 环境变量设代理——东财 push2.eastmoney.com 整域名对阿里云 IDC IP 封禁（建连后 RemoteDisconnected），资金流 fflow/行业对比 clist 全失败，设代理走非 IDC 出口绕过；不设则直连（本地无影响）。`_em_get` 重试对 ProxyError 自动兜底。回归测试 `tests/test_astock_v0222_fix.py`（7 例），详见 `issues/009-push2-idc-block.md`。部署：服务器 `.env` 加 `EM_HTTP_PROXY`，`update-server.sh --env`。
 
 ### 数据质量三修复 + Week5 过时快照勘误（v0.2.21 已修复）
 v0.2.20 部署后门控暴露股价不一致/行业对比偶发/股东户数与董监高交易缺失。三项修复：(1) `get_fundamentals` 股价对齐——`curr_date` 早于今日时 price 改用该日 K 线收盘价（复用 `get_stock_data` 含新浪 fallback），消除与技术分析基准日的时差（实测 300308 由实时 1169.31 对齐到 07-14 收盘 1184.05）；新增私有 helper `_get_close_on_date`/`_resolve_price`。(2) `_em_get` 加偶发重试——连接异常（RemoteDisconnected/Timeout）或 5xx 时指数退避重试最多 3 次，4xx 不重试，缓解行业对比/资金流偶发失败。(3) `get_insider_transactions` 增强三段——十大股东（RPT_F10_EH_HOLDERS）+ 股东户数变化（F10 `ShareholderResearch/PageAjax` gdrs：HOLDER_TOTAL_NUM/变化比例/户均流通股/筹码集中度）+ 董监高持股变动（F10 `CompanyManagement/PageAjax` cgbd：高管/职务/变动股数/均价/变动方式）。另：DEV_LOG Week 5「14/14 OK」勘误为过时快照（akshare+旧mootdx+pandas2.x，v0.2.5 重写后未复跑），详见 `issues/008-week5-quality-gate-stale-snapshot.md`。回归测试见 `tests/test_astock_v0221_fix.py`（8 例）。

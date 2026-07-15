@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [0.2.22] - 2026-07-15
+
+门控 C vs A 矛盾修正 + push2 IDC 封禁代理支持 + prompt 假缺失消除。无破坏性变更、无新依赖。
+
+### 修复
+- **门控矛盾（quality_gate.py）**：硬检查不再因 `[数据缺失]` 数量 ≥3 机械判 C（改为 B，待 LLM 判断关键性）；`_build_review_prompt` 把硬检查结果喂给 LLM 复审，评级标准明确"非必采项缺失不影响 A 级"+ 要求与硬检查不一致需说明；summary 说明两层关系。消除"基本面硬检查 C vs LLM 复审 A"矛盾。
+- **prompt 假缺失**：`fundamentals_analyst.py` 股权质押/减持计划预披露/关联交易（系统无接口）从硬要求改为"系统未采集"说明，消除 3 处设计性缺失；`hot_money_tracker.py` 必采清单后加标注规范，明确"龙虎榜近30日未上榜"等正常空结果不标 `[数据缺失]`，消除误标。
+
+### 新增
+- **push2 HTTP 代理（a_stock.py）**：`_EM_SESSION` 读 `EM_HTTP_PROXY` 环境变量设置 proxies。东财 push2.eastmoney.com 整域名对阿里云等 IDC IP 封禁（建连后 RemoteDisconnected），致资金流 fflow、行业对比 clist 全失败；设代理走非 IDC 出口绕过。不设则直连（本地开发无影响）。`_em_get` 重试对 ProxyError 自动兜底。
+
+### 部署
+- 服务器 `.env` 加 `EM_HTTP_PROXY=<代理URL>`，`bash scripts/update-server.sh --env` 部署。代理需自备（国内住宅 IP 最佳）。无代理时资金流仍缺，但门控+prompt 修正独立生效。
+
 ## [0.2.21] - 2026-07-15
 
 数据质量门控三修复 + Week 5 过时快照勘误。无破坏性变更、无新依赖。
