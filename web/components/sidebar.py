@@ -215,6 +215,9 @@ def render_sidebar() -> None:
             <div style="font-size:0.85rem; color:#888; margin-top:0.2rem;">
                 A股多Agent投研系统
             </div>
+            <div style="font-size:0.75rem; color:#666; margin-top:0.3rem;">
+                v0.2.21 by joycoding200
+            </div>
         </div>
         """,
         unsafe_allow_html=True,

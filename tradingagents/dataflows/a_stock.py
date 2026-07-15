@@ -277,22 +277,39 @@ _EM_MIN_INTERVAL = float(os.environ.get("EM_MIN_INTERVAL", "1.0"))
 _em_last_call = [0.0]  # 模块级上次东财请求时间戳
 
 
-def _em_get(url, params=None, headers=None, timeout=15, **kwargs):
-    """东财统一请求入口：自动节流 + 复用 session + 默认 UA。
+def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
+    """东财统一请求入口：自动节流 + 复用 session + 默认 UA + 偶发重试。
 
     所有 eastmoney.com 接口都应通过它请求，避免多 Agent 高频拉数据被封 IP。
     串行限流：与上次东财请求间隔 < EM_MIN_INTERVAL 时 sleep 补足 + 0.1~0.5s 随机抖动。
     传入的 headers 会覆盖 session 默认 UA（用于保留各端点自己的 Referer/Origin）。
+    偶发重试：连接异常（RemoteDisconnected/Timeout/ConnectionError）或 5xx 响应时按指数
+    退避重试最多 retries 次；4xx 直接返回（接口本身问题不重试，交给调用方处理）。
     """
-    wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.5))
-    try:
-        return _EM_SESSION.get(
-            url, params=params, headers=headers, timeout=timeout, **kwargs
-        )
-    finally:
-        _em_last_call[0] = time.time()
+    last_exc = None
+    for attempt in range(retries):
+        wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
+        if wait > 0:
+            time.sleep(wait + random.uniform(0.1, 0.5))
+        try:
+            resp = _EM_SESSION.get(
+                url, params=params, headers=headers, timeout=timeout, **kwargs
+            )
+            _em_last_call[0] = time.time()
+            if resp.status_code >= 500 and attempt < retries - 1:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            return resp
+        except _requests.exceptions.RequestException as e:
+            _em_last_call[0] = time.time()
+            last_exc = e
+            if attempt < retries - 1:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("_em_get exhausted retries")
 
 
 def _eastmoney_datacenter(
@@ -708,6 +725,44 @@ def get_indicators(
 # ---- 3. get_fundamentals ----
 
 
+def _get_close_on_date(code, date_str):
+    """取指定日期收盘价。复用 get_stock_data（mootdx + 新浪 fallback），与技术分析同源。
+    找不到返回 None。"""
+    try:
+        out = get_stock_data(code, date_str, date_str)
+        if not out or "Close" not in out:
+            return None
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if not line or line.startswith("#") or "," not in line:
+                continue
+            parts = line.split(",")
+            if len(parts) >= 5 and parts[4] not in ("Close", ""):
+                try:
+                    return float(parts[4])
+                except ValueError:
+                    continue
+        return None
+    except Exception:
+        return None
+
+
+def _resolve_price(code, curr_date, realtime_price):
+    """股价对齐：curr_date 早于今日时返回该日收盘价（与技术分析基准日一致），
+    否则返回实时价。返回 (price, source_note)。"""
+    if curr_date:
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            d = str(curr_date)[:10]
+            if d < today:
+                close = _get_close_on_date(code, d)
+                if close:
+                    return close, f"close on {d}"
+        except Exception:
+            pass
+    return realtime_price, "realtime"
+
+
 def get_fundamentals(
     ticker: Annotated[str, "A-stock code"],
     curr_date: Annotated[str, "current date"] = None,
@@ -723,10 +778,11 @@ def get_fundamentals(
             tq = _tencent_quote([code])
             if code in tq:
                 q = tq[code]
+                price_val, price_src = _resolve_price(code, curr_date, q["price"])
                 lines.extend(
                     [
                         f"Name: {q['name']}",
-                        f"Price: {q['price']}",
+                        f"Price: {price_val} ({price_src})",
                         f"PE (TTM): {q['pe_ttm']}",
                         f"PE (Static): {q['pe_static']}",
                         f"PB: {q['pb']}",
@@ -855,7 +911,7 @@ def get_fundamentals(
                 try:
                     tq = _tencent_quote([code])
                     if code in tq:
-                        price = tq[code]["price"]
+                        price, _price_src = _resolve_price(code, curr_date, tq[code]["price"])
                         years_sorted = sorted(eps_by_year.keys())
                         if years_sorted and eps_by_year.get(years_sorted[0], 0) > 0:
                             eps_cur = eps_by_year[years_sorted[0]]
@@ -1336,14 +1392,19 @@ def get_global_news(
 def get_insider_transactions(
     ticker: Annotated[str, "A-stock code"],
 ) -> str:
-    """Get top-10 shareholders & holding changes via 东财 datacenter.
+    """Get top-10 shareholders + 股东户数变化 + 董监高持股变动 via 东财.
 
-    A 股无美股式 insider transactions 概念，以十大股东持股变化作为最接近等价。
-    mootdx F10 仅返回"最新提示"栏目（通达信 TCP F10 不提供股东研究），
-    v0.2.20 改用东财 RPT_F10_EH_HOLDERS 取最新一期十大股东。
+    A 股无美股式 insider transactions 概念，整合三段最接近等价数据：
+    1. 十大股东（datacenter RPT_F10_EH_HOLDERS，最新一期持股变化）
+    2. 股东户数变化（F10 ShareholderResearch/PageAjax gdrs，近 4 期）
+    3. 董监高持股变动（F10 CompanyManagement/PageAjax cgbd，近 10 条）
     """
     code = _normalize_ticker(ticker)
+    prefix = _get_prefix(code).upper()
 
+    sections = []
+
+    # --- 1. 十大股东（datacenter RPT_F10_EH_HOLDERS） ---
     try:
         data = _eastmoney_datacenter(
             "RPT_F10_EH_HOLDERS",
@@ -1352,37 +1413,86 @@ def get_insider_transactions(
             sort_columns="END_DATE",
             sort_types="-1",
         )
-
-        if not data:
-            return f"No shareholder data found for A-stock '{code}'"
-
-        # 取最新一期十大股东（按 END_DATE 降序，同日期前 10 名）
-        latest_date = str(data[0].get("END_DATE", ""))[:10]
-        latest_holders = [
-            x for x in data if str(x.get("END_DATE", ""))[:10] == latest_date
-        ][:10]
-
-        lines = [
-            f"# Top-10 Shareholders for {code} (A-stock)",
-            f"# Note: A-stock equivalent of insider transactions",
-            f"# Data source: 东财 datacenter RPT_F10_EH_HOLDERS",
-            f"# Report date: {latest_date}",
-            f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "",
-            "股东名称 | 持股数 | 持股比例(%) | 持股变化 | 是否机构",
-        ]
-        for x in latest_holders:
-            name = x.get("HOLDER_NAME", "")
-            hold = x.get("HOLD_NUM", 0)
-            ratio = x.get("HOLD_NUM_RATIO", 0)
-            change = x.get("HOLD_NUM_CHANGE", "不变")
-            is_org = "机构" if str(x.get("IS_HOLDORG")) == "1" else "个人"
-            lines.append(f"  {name} | {hold} | {ratio} | {change} | {is_org}")
-
-        return "\n".join(lines)
-
+        if data:
+            latest_date = str(data[0].get("END_DATE", ""))[:10]
+            latest_holders = [
+                x for x in data if str(x.get("END_DATE", ""))[:10] == latest_date
+            ][:10]
+            lines = [
+                f"## 十大股东（最新一期 {latest_date}）",
+                "股东名称 | 持股数 | 持股比例(%) | 持股变化 | 是否机构",
+            ]
+            for x in latest_holders:
+                name = x.get("HOLDER_NAME", "")
+                hold = x.get("HOLD_NUM", 0)
+                ratio = x.get("HOLD_NUM_RATIO", 0)
+                change = x.get("HOLD_NUM_CHANGE", "不变")
+                is_org = "机构" if str(x.get("IS_HOLDORG")) == "1" else "个人"
+                lines.append(f"  {name} | {hold} | {ratio} | {change} | {is_org}")
+            sections.append("\n".join(lines))
     except Exception as e:
-        return f"Error retrieving insider/shareholder data for {code}: {str(e)}"
+        logger.warning("holders failed for %s: %s", code, e)
+
+    # --- 2. 股东户数变化（F10 ShareholderResearch gdrs） ---
+    try:
+        url = f"https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax?code={prefix}{code}"
+        r = _requests.get(
+            url,
+            headers={"User-Agent": _UA, "Referer": "https://emweb.eastmoney.com/"},
+            timeout=10,
+        )
+        gdrs = (r.json() or {}).get("gdrs", []) or []
+        if gdrs:
+            lines = [
+                "## 股东户数变化",
+                "报告期 | 股东户数 | 户数变化(%) | 户均流通股 | 筹码集中度",
+            ]
+            for x in gdrs[:4]:
+                d = str(x.get("END_DATE", ""))[:10]
+                num = x.get("HOLDER_TOTAL_NUM", "-")
+                ratio = x.get("TOTAL_NUM_RATIO", "-")
+                avg = x.get("AVG_FREE_SHARES", "-")
+                focus = x.get("HOLD_FOCUS", "-")
+                lines.append(f"  {d} | {num} | {ratio} | {avg} | {focus}")
+            sections.append("\n".join(lines))
+    except Exception as e:
+        logger.warning("gdrs failed for %s: %s", code, e)
+
+    # --- 3. 董监高持股变动（F10 CompanyManagement cgbd） ---
+    try:
+        url = f"https://emweb.securities.eastmoney.com/PC_HSF10/CompanyManagement/PageAjax?code={prefix}{code}"
+        r = _requests.get(
+            url,
+            headers={"User-Agent": _UA, "Referer": "https://emweb.eastmoney.com/"},
+            timeout=10,
+        )
+        cgbd = (r.json() or {}).get("cgbd", []) or []
+        if cgbd:
+            lines = [
+                "## 董监高持股变动（近 10 条）",
+                "变动日期 | 高管/变动人 | 职务 | 变动股数 | 均价 | 变动后持股 | 变动方式",
+            ]
+            for x in cgbd[:10]:
+                d = str(x.get("END_DATE", ""))[:10]
+                name = x.get("EXECUTIVE_NAME") or x.get("HOLDER_NAME", "-")
+                pos = x.get("POSITION", "-")
+                chg = x.get("CHANGE_NUM", "-")
+                price = x.get("AVERAGE_PRICE", "-")
+                after = x.get("CHANGE_AFTER_HOLDNUM", "-")
+                way = x.get("TRADE_WAY", "-")
+                lines.append(f"  {d} | {name} | {pos} | {chg} | {price} | {after} | {way}")
+            sections.append("\n".join(lines))
+    except Exception as e:
+        logger.warning("cgbd failed for %s: %s", code, e)
+
+    if not sections:
+        return f"No shareholder data found for A-stock '{code}'"
+
+    header = f"# Shareholder & Insider Data for {code} (A-stock)\n"
+    header += "# Data source: 东财 datacenter + F10 PageAjax\n"
+    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    return header + "\n" + "\n\n".join(sections)
+
 
 
 # ---- 10. get_profit_forecast ----

@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [0.2.21] - 2026-07-15
+
+数据质量门控三修复 + Week 5 过时快照勘误。无破坏性变更、无新依赖。
+
+### 修复
+- **基本面/解禁报告股价与技术分析不一致**：`get_fundamentals` 的股价原取腾讯实时价，分析基准日为历史日时与 `get_stock_data` 的历史收盘价产生时差（如 300308 实时 1169.31 vs 07-14 收盘 1184.05）。新增 `_resolve_price`/`_get_close_on_date`，当 `curr_date` 早于今日时改用该日 K 线收盘价（复用 `get_stock_data` 的 mootdx+新浪 fallback），Forward PE 计算同步对齐。
+- **东财接口偶发 `RemoteDisconnected` 致行业对比/资金流缺失**：`_em_get` 原无重试，连接异常即失败。现对连接异常（RemoteDisconnected/Timeout/ConnectionError）或 5xx 响应按指数退避重试最多 3 次，4xx 直接返回不重试。
+- **解禁报告股东户数变化/董监高交易记录缺失**：`get_insider_transactions` 原仅返回十大股东。增强为三段：十大股东（datacenter `RPT_F10_EH_HOLDERS`）+ 股东户数变化（F10 `ShareholderResearch/PageAjax` 的 `gdrs`：股东户数/变化比例/户均流通股/筹码集中度，近 4 期）+ 董监高持股变动（F10 `CompanyManagement/PageAjax` 的 `cgbd`：高管/职务/变动股数/均价/变动方式，近 10 条）。
+
+### 文档
+- DEV_LOG Week 5「14/14 接口全部 OK」补勘误：该记录是 akshare+旧 mootdx+pandas 2.x 旧实现快照，v0.2.5 移除 akshare 重写后未复跑回归，导致 5 个 bug 潜伏 2 个月。详见 `issues/008-week5-quality-gate-stale-snapshot.md`。
+
+### 测试
+- 新增 `tests/test_astock_v0221_fix.py` 8 例（股价对齐 3 + _em_get 重试 3 + insider 三段 2）；旧 `test_get_insider_transactions` 补 `_requests.get` mock 避免联网。全量 150 passed。
+
+## [0.2.20] - 2026-07-15
+
+概念板块/股东数据接口迁移（v0.2.19 部署后门控暴露的 2 个失效接口）。
+
+### 修复
+- **`get_concept_blocks` 百度 PAE 403**：`getrelatedblock` 端点下线，迁移至东财 F10 `CoreConception/PageAjax`（ssbk 所属板块 + hxtc 核心题材）。注：东财 ssbk 不含板块当日涨幅（百度原有），仅返回板块归属。
+- **`get_insider_transactions` mootdx F10 失效**：mootdx 0.11.x 的 F10 栏目目录对个股仅暴露"最新提示"，`F10(name="股东研究")` 拿不到股东数据。迁移至东财 datacenter `RPT_F10_EH_HOLDERS`（按 END_DATE 降序取最新一期十大股东）。
+
+### 测试
+- 新增 `tests/test_astock_interface_fix.py` 2 例；全量 142 passed。详见 `issues/007-interface-migration.md`。
+
+## [0.2.19] - 2026-07-15
+
+关键财务数据缺失 3 bug 修复（用户报告"关键财务、主力资金数据缺失"）。
+
+### 修复
+- **`get_fundamentals` mootdx 字段取不到**：mootdx `client.finance()` 返回拼音缩写字段（`jinglirun`/`zhuyingshouru`/`meigujingzichan`...），旧 `field_map` 用 `eps`/`roe` 英文名取不到。改拼音字段并推算 `EPS=jinglirun/zongguben`、`ROE=jinglirun/jingzichan*100`。
+- **新浪财报三表恒空**：v0.2.5 移除 akshare 后自写新浪 API 解析，误用 `result.data.lrb` key，实际结构为 `result.data.report_list[日期]["data"]`。重写解析，构造行=报告期/列=项目名 DataFrame。
+- **同花顺 EPS 崩溃**：pandas 3.0 `read_html` 不再接受裸 HTML 字符串（当文件路径 open），改 `pd.read_html(io.StringIO(r.text))`。
+
+### 测试
+- 新增 `tests/test_astock_fundamentals_fix.py` 5 例；全量 140 passed。详见 `issues/006-fundamentals-data-missing.md`。
+
 ## [0.2.18] — 2026-07-10
 
 合并社区 PR #75（致谢 @wangyuxun6699），与 v0.2.17 的 #76 修复同属一类问题：LLM 工具调用把非股票标识当 `ticker` 传入。

@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/simonlin1212/TradingAgents-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.2.20
+- **当前版本**: 0.2.21
 
 ## 架构
 
@@ -55,6 +55,9 @@ v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取
 
 ### 概念板块/股东数据接口迁移（v0.2.20 已修复）
 `get_concept_blocks`（百度 PAE `getrelatedblock` 返回 403 下线）迁移至东财 F10 `CoreConception/PageAjax`（ssbk 所属板块 + hxtc 核心题材）；`get_insider_transactions`（mootdx F10 仅返回"最新提示"栏目，通达信 TCP F10 无股东研究）迁移至东财 `RPT_F10_EH_HOLDERS`（按 END_DATE 降序取最新一期十大股东持股变化）。注意：东财 ssbk 不含板块当日涨幅（百度 PAE 原有），仅返回板块归属。`get_industry_comparison`（东财 push2 clist）代码无 bug，偶发缺失是东财连接/LLM 未调用，无需改代码。回归测试见 `tests/test_astock_interface_fix.py`，详见 `issues/007-interface-migration.md`。
+
+### 数据质量三修复 + Week5 过时快照勘误（v0.2.21 已修复）
+v0.2.20 部署后门控暴露股价不一致/行业对比偶发/股东户数与董监高交易缺失。三项修复：(1) `get_fundamentals` 股价对齐——`curr_date` 早于今日时 price 改用该日 K 线收盘价（复用 `get_stock_data` 含新浪 fallback），消除与技术分析基准日的时差（实测 300308 由实时 1169.31 对齐到 07-14 收盘 1184.05）；新增私有 helper `_get_close_on_date`/`_resolve_price`。(2) `_em_get` 加偶发重试——连接异常（RemoteDisconnected/Timeout）或 5xx 时指数退避重试最多 3 次，4xx 不重试，缓解行业对比/资金流偶发失败。(3) `get_insider_transactions` 增强三段——十大股东（RPT_F10_EH_HOLDERS）+ 股东户数变化（F10 `ShareholderResearch/PageAjax` gdrs：HOLDER_TOTAL_NUM/变化比例/户均流通股/筹码集中度）+ 董监高持股变动（F10 `CompanyManagement/PageAjax` cgbd：高管/职务/变动股数/均价/变动方式）。另：DEV_LOG Week 5「14/14 OK」勘误为过时快照（akshare+旧mootdx+pandas2.x，v0.2.5 重写后未复跑），详见 `issues/008-week5-quality-gate-stale-snapshot.md`。回归测试见 `tests/test_astock_v0221_fix.py`（8 例）。
 
 ### 模型兼容性
 deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 位代码。`safe_ticker_component` 已加兜底自动转码，但不同模型表现仍有差异。

@@ -60,6 +60,8 @@ def test_get_insider_transactions_uses_eastmoney_holders(monkeypatch):
     ]
     monkeypatch.setattr(a_stock, "_eastmoney_datacenter",
                         lambda *a, **k: fake_data)
+    monkeypatch.setattr(a_stock._requests, "get",
+                        lambda *a, **k: _FakeResp({}))
 
     out = a_stock.get_insider_transactions("300308")
     assert "2026-03-31" in out          # 最新一期
