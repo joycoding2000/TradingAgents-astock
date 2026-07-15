@@ -77,6 +77,60 @@ deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 
 - 数据层新增接口遵循 `tradingagents/dataflows/interface.py` 的 vendor 路由模式
 - Web UI 改动在 `web/` 目录，用 `streamlit run web/launch.py` 本地测试
 
+## 开发铁律与已知陷阱
+
+### 🔴 铁律（违反必导致功能崩坏）
+
+**1. 所有 `load_dotenv()` 必须设 `override=True`**
+`load_dotenv()` 默认 `override=False`，不覆盖已存在环境变量。容器/系统已设同名变量时 `.env` 值被静默忽略。`web/app.py` 已设；新调用点必须同样设。改 `.env` 后必须 `update-server.sh --env`（`restart` 不重读）。
+
+**2. 禁止引入 pyfpdf（与 fpdf2 名称冲突）**
+`pyfpdf`（废弃 1.x）和 `fpdf2`（当前 2.x）都以 `fpdf` 名称导入——共存时谁后装谁生效，致中文 PDF 崩溃 `UnicodeEncodeError: latin-1`。`pip list | grep fpdf` 应只有 `fpdf2>=2.8.6`。
+
+**3. 可选依赖导入必须在函数级守卫，不能模块级**
+`from fpdf import FPDF` 在模块顶层，一旦 fpdf 损坏 → `web/app.py` import 链崩溃，整个应用起不来。所有非关键依赖的导入须用 try/except 在函数内守卫，失败只降级该功能不拖垮全应用（v0.2.17 #72）。
+
+**4. 所有 `open()` 必须显式 `encoding="utf-8"`**
+经历两轮修复（v0.2.2 `PYTHONUTF8` 无效 → v0.2.4 每处显式传）。Windows cp1252 默认致 `UnicodeEncodeError`。任何新文件 I/O 必须遵守，不得依赖进程级/环境变量设置。
+
+**5. 东财 `eastmoney.com` 请求必须走 `_em_get()`**
+裸调 `_requests.get()` 不走限流/代理，多 Agent 并发触发东财临时封 IP。违规致 v0.2.22 阿里云被封。详见 memory `em-all-via-em-get`，验证命令见该 memory。
+
+### 🟠 提示词与工具
+
+**6. 提示词中的函数描述参数名必须与实现完全一致**
+LLM 工具误用的首要根因是提示词描述错。v0.2.18 5 个分析师写 `get_news(query, ...)` 实为 `ticker` → 模型传概念词当股票代码。新增/修改工具时参数名必须与实现精确一致，提示词预防 > 工具层容错。
+
+**7. 提示词不得将无 API 接口的数据项列为"必采"**
+`fundamentals_analyst.py` 曾要求股权质押/减持/关联交易但系统全无接口（已改"系统未采集"）。标记为"必采"的数据项必须有对应的工具/接口。正常空结果（"龙虎榜未上榜"）不标 `[数据缺失]`。
+
+**8. 工具输入验证必须返回可恢复 ToolMessage，不能抛异常**
+LangGraph 依赖 ToolMessage 自我纠正。抛异常中断整个 graph。`resolve_ticker` 报错从"找不到"改为"ticker 只接受 6 位代码或完整名称，行业/概念/板块名无效"→ LLM 读到后可自我纠正（v0.2.17 #76）。
+
+**9. 改 prompt 必须用真实 A 股案例验证**
+LLM 行为不可预测——prompt 看似正确但输出可能意外。改 prompt 后必须在实际分析中跑一次（任一股票），验证 LLM 行为与预期一致（DEV_LOG 协作约定）。
+
+### 🟠 Web UI
+
+**10. Streamlit CSS 禁止 `display:none` `stHeader`/`stToolbar`**
+侧边栏展开按钮嵌在工具栏内部。隐藏整个顶栏致展开按钮也消失——侧边栏收起后再也调不出来（刷新/重启无效）。只能透明化顶栏、精准隐藏内部元素（v0.2.8 #36）。
+
+**11. Docker 运行镜像必须安装中文字体**
+`python:3.12-slim` 无中文字体 → PDF 导出崩溃。Dockerfile 运行阶段须 `apt-get install fonts-noto-cjk`（v0.2.12 #48）。
+
+### 🟡 已知限制（勿重复排查）
+
+**12. MiniMax thinking mode + structured-output 冲突**
+Research Manager/Trader/PM 报 `400 - Thinking mode does not support this tool_choice`。代码已降级为 free-text 重试，功能可用但日志有噪音。切其他模型（如 DeepSeek）可消除。
+
+### 🟡 数据层约束
+
+**13. 历史日分析必须用历史收盘价，不能用实时价**
+`_resolve_price`：`curr_date` < 今日时取该日 K 线收盘价（mootdx+新浪 fallback）。实时价与历史价偏差可达几十元（300308: 1169 vs 1184）。新增价格相关数据接入点必须检查此规则。
+
+**14. mootdx BESTIP 空串 → 三级 fallback**
+mootdx 0.11.x `BESTIP.HQ` 可能空串致客户端崩溃。禁止依赖 bestip 自动探测，必须用 `_get_mootdx_client()`（三级：bestip 测速 → 裸 factory → 明确报错）。
+
 ## 相关项目
 - [a-stock-data](https://github.com/simonlin1212/a-stock-data) — A 股 MCP 数据服务（Claude Code 用的 skill）
 - 上游 [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) — 原版框架
