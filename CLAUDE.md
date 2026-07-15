@@ -96,9 +96,12 @@ deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 
 **5. 东财 `eastmoney.com` 请求必须走 `_em_get()`**
 裸调 `_requests.get()` 不走限流/代理，多 Agent 并发触发东财临时封 IP。违规致 v0.2.22 阿里云被封。详见 memory `em-all-via-em-get`，验证命令见该 memory。
 
+**6. 数据源 try/except 不得静默吞错**
+`a_stock.py` 大量 `try/except` 只写 `logger.warning` 不上抛，调用方无法区分"拿到数据"与"静默失败返回空"。issues/006 三个 bug 共享此根因。新增数据源端点必须：① 明确返回值语义（空 vs 失败）；② 关键接口失败需上抛或返回哨兵值让调用方感知。
+
 ### 🟠 提示词与工具
 
-**6. 提示词中的函数描述参数名必须与实现完全一致**
+**7. 提示词中的函数描述参数名必须与实现完全一致**
 LLM 工具误用的首要根因是提示词描述错。v0.2.18 5 个分析师写 `get_news(query, ...)` 实为 `ticker` → 模型传概念词当股票代码。新增/修改工具时参数名必须与实现精确一致，提示词预防 > 工具层容错。
 
 **7. 提示词不得将无 API 接口的数据项列为"必采"**
@@ -109,6 +112,14 @@ LangGraph 依赖 ToolMessage 自我纠正。抛异常中断整个 graph。`resol
 
 **9. 改 prompt 必须用真实 A 股案例验证**
 LLM 行为不可预测——prompt 看似正确但输出可能意外。改 prompt 后必须在实际分析中跑一次（任一股票），验证 LLM 行为与预期一致（DEV_LOG 协作约定）。
+
+### 🏗 架构约束
+
+**新增分析师必须改 6 个文件，漏一个 graph 断**
+文件清单：① analyst body（`tradingagents/agents/analysts/xxx.py`）② `agent_states.py`（加字段）③ `agents/__init__.py`（注册）④ `graph/conditional_logic.py`（路由）⑤ `graph/trading_graph.py`（ToolNode）⑥ `graph/setup.py`（节点注册）。缺任一个 LangGraph 静默跳过该 analyst、无报错（DEV_LOG Week 2）。
+
+**新分析师报告不自动流入下游，需手动补 5 个 agent**
+Bull/Bear Researcher 和 3 个 Risk Debater 只消费原版 4 报告字段。新增的 `policy_report`/`hot_money_report`/`lockup_report` 需在 5 个下游 prompt 里手工加 `state.get("xxx_report", "")`。不加则新分析师产出在辩论层被静默忽略（CHANGES_FROM_UPSTREAM）。
 
 ### 🟠 Web UI
 
@@ -130,6 +141,12 @@ Research Manager/Trader/PM 报 `400 - Thinking mode does not support this tool_c
 
 **14. mootdx BESTIP 空串 → 三级 fallback**
 mootdx 0.11.x `BESTIP.HQ` 可能空串致客户端崩溃。禁止依赖 bestip 自动探测，必须用 `_get_mootdx_client()`（三级：bestip 测速 → 裸 factory → 明确报错）。
+
+**15. 数据层改动后必须重跑质量回归**
+`test_data_quality.py` 是 v0.2.5 前的一次性快照，v0.2.5 移除 akshare 重写后从未复跑，5 个 bug 潜伏 2 个月才暴露（issues/008）。改动数据源、升级依赖、新增接口后必须跑全量数据层测试验证——"跑通一次"不代表"现在还通"。
+
+**16. 一个源端点下线 → 扫该源所有端点**
+v0.2.7 百度 PAE `fundflow`/`fundsortlist` 下线，只修了 `get_fund_flow`。同源的概念板块 `getrelatedblock` 仍用旧端点，2 个月后才在 v0.2.20 发现（issues/007）。任何 vendor 端点不可用时，必须 grep 全项目该 vendor 域名的所有调用点一并评估。
 
 ## 相关项目
 - [a-stock-data](https://github.com/simonlin1212/a-stock-data) — A 股 MCP 数据服务（Claude Code 用的 skill）
