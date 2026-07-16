@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/TauricResearch/TradingAgents">TauricResearch/TradingAgents</a>（65K ⭐）
   → <a href="https://github.com/simonlin1212/tradingagents-astock">simonlin1212/tradingagents-astock</a>（A 股特化）
-  → <b>joycoding200/TradingAgents-astock</b>（本项目，持续迭代）<br>
+  → <b>joycoding2000/TradingAgents-astock</b>（本项目，持续迭代）<br>
   全 Apache 2.0 开源 · pip install 即跑 · 零外部服务依赖
 </p>
 
@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/joycoding200/tradingagents-astock/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/joycoding200/tradingagents-astock?style=social"/></a>
-  <a href="https://github.com/joycoding200/tradingagents-astock/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/joycoding200/tradingagents-astock?style=social"/></a>
+  <a href="https://github.com/joycoding2000/tradingagents-astock/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/joycoding2000/tradingagents-astock?style=social"/></a>
+  <a href="https://github.com/joycoding2000/tradingagents-astock/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/joycoding2000/tradingagents-astock?style=social"/></a>
   <a href="https://arxiv.org/abs/2412.20138"><img alt="论文" src="https://img.shields.io/badge/论文-arXiv_2412.20138-B31B1B?logo=arxiv"/></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue"/></a>
   <a href="./CHANGES_FROM_UPSTREAM.md"><img alt="改动记录" src="https://img.shields.io/badge/改动记录-CHANGES-orange"/></a>
@@ -150,7 +150,7 @@
 
 ```bash
 # Python >= 3.10
-git clone https://github.com/joycoding200/tradingagents-astock.git
+git clone https://github.com/joycoding2000/tradingagents-astock.git
 cd tradingagents-astock
 pip install -e .
 
@@ -390,7 +390,7 @@ TradingAgents-Astock/
   <a href="https://ifdian.net/a/simonlin">爱发电</a>
 </p-->
 
-> 想要什么功能？欢迎开 [Issue](https://github.com/joycoding200/tradingagents-astock/issues) 提需求，赞助者的 Issue 优先处理。
+> 想要什么功能？欢迎开 [Issue](https://github.com/joycoding2000/tradingagents-astock/issues) 提需求，赞助者的 Issue 优先处理。
 
 ---
 

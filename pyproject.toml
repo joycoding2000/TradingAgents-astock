@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "joycoding200", email = "joycoding200@users.noreply.github.com"},
+    {name = "joycoding2000", email = "joycoding2000@users.noreply.github.com"},
 ]
 dependencies = [
     "langchain-core>=0.3.81",
@@ -40,9 +40,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/joycoding200/tradingagents-astock"
-Repository = "https://github.com/joycoding200/tradingagents-astock"
-Issues = "https://github.com/joycoding200/tradingagents-astock/issues"
+Homepage = "https://github.com/joycoding2000/tradingagents-astock"
+Repository = "https://github.com/joycoding2000/tradingagents-astock"
+Issues = "https://github.com/joycoding2000/tradingagents-astock/issues"
 Upstream = "https://github.com/TauricResearch/TradingAgents"
 
 [project.optional-dependencies]
