@@ -176,6 +176,23 @@ def test_eastmoney_failure_is_data_missing_without_proxy_details(monkeypatch):
     assert "东财数据暂不可用" not in fund_flow + industry
 
 
+def test_eastmoney_empty_critical_payload_is_not_reported_as_success(monkeypatch):
+    """200 + 空 payload 不能伪装成“接口成功”，必须触发质量门控。"""
+    from tradingagents.dataflows import a_stock
+
+    class _Response:
+        def json(self):
+            return {"data": {"klines": [], "diff": []}}
+
+    monkeypatch.setattr(a_stock, "_em_get", lambda *args, **kwargs: _Response())
+
+    fund_flow = a_stock.get_fund_flow("600519", "2026-07-17")
+    industry = a_stock.get_industry_comparison("600519", "2026-07-17")
+
+    assert "[数据缺失: 个股主力资金数据暂不可用]" in fund_flow
+    assert "[数据缺失: 行业横向对比数据暂不可用]" in industry
+
+
 def test_concept_blocks_failure_is_data_missing_without_proxy_details(monkeypatch):
     """东财 F10 失败同样返回统一的数据缺失标记。"""
     from tradingagents.dataflows import a_stock

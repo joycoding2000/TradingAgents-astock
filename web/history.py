@@ -185,19 +185,12 @@ def load_analysis(path: str) -> dict[str, Any]:
 
 
 def extract_signal(state: dict[str, Any]) -> str:
-    """Extract the short signal (Buy/Sell/Hold) from a final state dict."""
-    import re
+    """Extract the final five-tier signal without consulting interim opinions."""
+    if state.get("data_quality_status") == "低":
+        return "DataIncomplete"
 
-    for field in (
-        "investment_plan",
-        "trader_investment_decision",
-        "final_trade_decision",
-    ):
-        text = state.get(field, "")
-        if not text:
-            continue
-        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        for keyword in ("BUY", "SELL", "HOLD"):
-            if keyword in cleaned.upper():
-                return keyword.capitalize()
-    return "N/A"
+    from tradingagents.agents.utils.rating import parse_rating
+
+    text = str(state.get("final_trade_decision", ""))
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return parse_rating(cleaned, default="N/A")

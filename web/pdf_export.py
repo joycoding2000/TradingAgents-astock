@@ -31,6 +31,13 @@ except ImportError as exc:
     _FPDF_IMPORT_ERROR = exc
 
 from web.stock_display import normalize_stock_mentions, stock_display_label
+from web.plain_language import make_conclusion_plain
+from web.report_safety import (
+    DATA_INCOMPLETE_NOTICE,
+    display_signal,
+    is_data_limited,
+    signal_label,
+)
 
 
 _FPDF_VERSION = getattr(_fpdf_mod, "__version__", None) or getattr(_fpdf_mod, "FPDF_VERSION", "0")
@@ -322,6 +329,8 @@ def _format_table_cells(cells: list[str]) -> str:
 
 def _signal_color(signal: str) -> tuple[int, int, int]:
     s = signal.upper()
+    if "数据不完整" in signal or "DATAINCOMPLETE" in s:
+        return (249, 115, 22)
     if "BUY" in s:
         return (34, 197, 94)
     if "SELL" in s:
@@ -560,13 +569,25 @@ def _collect_sections(
     """
     sections: list[tuple[str, str]] = []
 
+    # Raw reports remain in the saved graph state for operational audit. They
+    # must never be exported to an ordinary user after a critical data failure.
+    if is_data_limited(final_state):
+        sections.append(("数据状态", DATA_INCOMPLETE_NOTICE))
+        quality = final_state.get("data_quality_summary", "")
+        if quality:
+            text = _strip_think(str(quality))
+            if ticker:
+                text = normalize_stock_mentions(text, ticker, final_state)
+            sections.append(("数据质量", make_conclusion_plain(text)))
+        return sections
+
     for key, title in _REPORT_SECTIONS:
         content = final_state.get(key, "")
         if content:
             text = _strip_think(str(content))
             if ticker:
                 text = normalize_stock_mentions(text, ticker, final_state)
-            sections.append((title, text))
+            sections.append((title, make_conclusion_plain(text)))
 
     debate = final_state.get("investment_debate_state")
     if debate and isinstance(debate, dict):
@@ -581,21 +602,21 @@ def _collect_sections(
             text = _strip_think("\n".join(parts))
             if ticker:
                 text = normalize_stock_mentions(text, ticker, final_state)
-            sections.append(("多空辩论", text))
+            sections.append(("多空辩论", make_conclusion_plain(text)))
 
     trader_decision = final_state.get("trader_investment_decision", "")
     if trader_decision:
         text = _strip_think(str(trader_decision))
         if ticker:
             text = normalize_stock_mentions(text, ticker, final_state)
-        sections.append(("交易员决策", text))
+        sections.append(("交易员决策", make_conclusion_plain(text)))
 
     inv_plan = final_state.get("investment_plan", "")
     if inv_plan:
         text = _strip_think(str(inv_plan))
         if ticker:
             text = normalize_stock_mentions(text, ticker, final_state)
-        sections.append(("最终投资建议", text))
+        sections.append(("最终投资建议", make_conclusion_plain(text)))
 
     risk = final_state.get("risk_debate_state")
     if risk and isinstance(risk, dict):
@@ -611,14 +632,14 @@ def _collect_sections(
             text = _strip_think("\n".join(parts))
             if ticker:
                 text = normalize_stock_mentions(text, ticker, final_state)
-            sections.append(("风控评估", text))
+            sections.append(("风控评估", make_conclusion_plain(text)))
 
     final_decision = final_state.get("final_trade_decision", "")
     if final_decision:
         text = _strip_think(str(final_decision))
         if ticker:
             text = normalize_stock_mentions(text, ticker, final_state)
-        sections.append(("最终决策", text))
+        sections.append(("最终决策", make_conclusion_plain(text)))
 
     return sections
 
@@ -631,7 +652,9 @@ def generate_pdf(final_state: dict[str, Any], ticker: str, trade_date: str, sign
     to Markdown export.
     """
     _ensure_fpdf2()
-    pdf = _ReportPDF(ticker, trade_date, signal, final_state)
+    pdf = _ReportPDF(
+        ticker, trade_date, signal_label(display_signal(final_state, signal)), final_state
+    )
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=20)
 
@@ -649,13 +672,14 @@ def generate_markdown(final_state: dict[str, Any], ticker: str, trade_date: str,
     font (common on minimal Linux/Windows installs).
     """
     ticker_label = stock_display_label(ticker, final_state)
+    signal = display_signal(final_state, signal)
     out = [
         "# A股多Agent投研分析报告",
         "",
         f"- **股票代码**：{ticker_label}",
         f"- **分析日期**：{trade_date}",
         f"- **生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"- **交易信号**：**{signal.upper()}**",
+        f"- **交易信号**：**{signal_label(signal)}**",
         "",
         "> ⚠️ 本报告由 AI 多 Agent 系统自动生成，仅供学习研究与技术演示，"
         "不构成任何投资建议。投资决策请咨询持牌专业机构，使用本报告所产生的"

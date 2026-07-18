@@ -16,7 +16,9 @@ from web.pdf_export import (
 )
 
 
-def test_generate_pdf_with_chinese_markdown_when_cjk_font_available():
+def test_generate_pdf_with_chinese_markdown_when_cjk_font_available(monkeypatch):
+    # Export formatting must be testable without a mootdx network lookup.
+    monkeypatch.setattr("web.stock_display.resolve_stock_name", lambda ticker: None)
     try:
         _find_cjk_fonts()
     except PDFExportError as exc:

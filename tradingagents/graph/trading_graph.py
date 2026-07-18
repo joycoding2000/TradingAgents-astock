@@ -429,10 +429,15 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
+        # Never let an unsupported BUY/SELL recommendation from an incomplete
+        # run become “past experience” for a later analysis.
+        decision_for_memory = final_state["final_trade_decision"]
+        if final_state.get("data_quality_status") == "低":
+            decision_for_memory = "关键数据未完整返回，本次未形成可执行结论。"
         self.memory_log.store_decision(
             ticker=company_name,
             trade_date=trade_date,
-            final_trade_decision=final_state["final_trade_decision"],
+            final_trade_decision=decision_for_memory,
         )
 
         # Clear checkpoint on successful completion to avoid stale state.
@@ -441,6 +446,11 @@ class TradingAgentsGraph:
                 self.config["data_cache_dir"], company_name, str(trade_date)
             )
 
+        # A critical data failure is not an investment rating. Do not let a
+        # BUY/SELL word retained in the internal audit text become a user-facing
+        # instruction merely because the signal parser sees it.
+        if final_state.get("data_quality_status") == "低":
+            return "DataIncomplete"
         return self.process_signal(final_state["final_trade_decision"])
 
     @staticmethod

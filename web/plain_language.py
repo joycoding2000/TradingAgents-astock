@@ -7,6 +7,18 @@ from typing import Any
 
 
 _REPLACEMENTS = (
+    (r"\bFund Flow\b", "资金流向"),
+    (r"\bHistorical Daily\b", "历史每日数据"),
+    (r"\bRealtime\b", "实时数据"),
+    (r"\bDate\b", "日期"),
+    (r"\bClose\b", "收盘时"),
+    (r"\bSignal\b", "信号"),
+    (r"\bTotal\b", "合计"),
+    (r"\bmain\b", "主力"),
+    (r"\blarge\b", "大单"),
+    (r"\bmid\b", "中单"),
+    (r"\bsmall\b", "小单"),
+    (r"\bsuper\b", "超大单"),
     (r"\*\*Recommendation\*\*", "**建议**"),
     (r"\*\*Rationale\*\*", "**为什么**"),
     (r"\*\*Strategic Actions\*\*", "**怎么做**"),

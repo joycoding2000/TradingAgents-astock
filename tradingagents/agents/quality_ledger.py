@@ -224,14 +224,22 @@ def format_tool_ledger_summary(summary: dict[str, Any]) -> str:
     ]
     if summary["failed_critical"]:
         lines.append(
-            "- 关键数据失败：" + "、".join(summary["failed_critical"])
+            "- 关键数据失败：" + "、".join(
+                _tool_label(name) for name in summary["failed_critical"]
+            )
         )
     if summary["failed_noncritical"]:
         lines.append(
-            "- 非关键数据失败：" + "、".join(summary["failed_noncritical"])
+            "- 非关键数据失败：" + "、".join(
+                _tool_label(name) for name in summary["failed_noncritical"]
+            )
         )
     if summary["invalid_inputs"]:
-        lines.append("- 输入无效：" + "、".join(summary["invalid_inputs"]))
+        lines.append(
+            "- 输入无效：" + "、".join(
+                _tool_label(name) for name in summary["invalid_inputs"]
+            )
+        )
     if not summary["latest"]:
         lines.append("- 未调用任何数据工具，不能验证分析数据。")
         return "\n".join(lines)

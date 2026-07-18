@@ -331,12 +331,19 @@ _em_dynamic_proxy = [""]
 _em_proxy_last_refresh = [0.0]
 _em_proxy_last_attempt = [0.0]
 _em_proxy_lock = threading.Lock()
+_em_request_lock = threading.Lock()
 # 巨量按量代理有效期为 3 分钟。提前 10 秒换新，避免刚好到期的代理进入请求链路。
 _EM_PROXY_TTL_SECONDS = max(
     1.0, float(os.environ.get("EM_PROXY_TTL_SECONDS", "170"))
 )
 _EM_PROXY_REFRESH_MIN_INTERVAL = max(
     0.0, float(os.environ.get("EM_PROXY_REFRESH_MIN_INTERVAL", "5"))
+)
+# A failed dynamic proxy may be a single bad exit IP.  Rotate only after a
+# request failure, and cap rotations so a provider incident cannot repeatedly
+# consume paid IPs during one data call.
+_EM_PROXY_MAX_ROTATIONS = max(
+    0, int(os.environ.get("EM_PROXY_MAX_ROTATIONS", "1"))
 )
 # 两次东财请求最小间隔(秒)；批量多 Agent 场景可设环境变量 EM_MIN_INTERVAL=1.5~2 降速。
 _EM_MIN_INTERVAL = float(os.environ.get("EM_MIN_INTERVAL", "1.0"))
@@ -424,6 +431,9 @@ def _refresh_em_dynamic_proxy(force: bool = False) -> bool:
             logger.warning("无法获取东财动态代理（%s）", type(exc).__name__)
             return False
 
+        # A Session can keep an old CONNECT tunnel alive. Close its pools before
+        # switching proxy so the retry actually uses the newly obtained IP.
+        _EM_SESSION.close()
         _EM_SESSION.proxies = {"http": proxy_url, "https": proxy_url}
         _em_dynamic_proxy[0] = proxy_url
         _em_proxy_last_refresh[0] = now
@@ -444,44 +454,66 @@ def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
     串行限流：与上次东财请求间隔 < EM_MIN_INTERVAL 时 sleep 补足 + 0.1~0.5s 随机抖动。
     传入的 headers 会覆盖 session 默认 UA（用于保留各端点自己的 Referer/Origin）。
     偶发重试：连接异常（RemoteDisconnected/Timeout/ConnectionError）或 5xx 响应时按指数
-    退避重试最多 retries 次；4xx 直接返回（接口本身问题不重试，交给调用方处理）。
+    退避重试最多 retries 次；429 视为临时限流并重试，其他 4xx 直接返回（接口本身问题
+    不重试，交给调用方处理）。
     """
-    # 已配置动态代理时，取代理失败不能悄悄从阿里云直连，否则 push2 的封禁会被伪装成
-    # 普通数据缺失。错误细节只写日志；调用方据此返回 [数据缺失]。静态代理仍优先。
-    if _juliangip_api_url and not _em_proxy and not _refresh_em_dynamic_proxy():
-        logger.warning("东财请求未执行：动态代理暂不可用")
-        raise _EastmoneyDataUnavailable("东财数据暂不可用")
+    # The graph can execute multiple tool nodes concurrently. Serialise the
+    # entire request/retry cycle so the interval really applies to every
+    # Eastmoney endpoint and a proxy switch cannot race another request.
+    with _em_request_lock:
+        # 已配置动态代理时，取代理失败不能悄悄从阿里云直连，否则 push2 的封禁会被伪装成
+        # 普通数据缺失。错误细节只写日志；调用方据此返回 [数据缺失]。静态代理仍优先。
+        if _juliangip_api_url and not _em_proxy and not _refresh_em_dynamic_proxy():
+            logger.warning("东财请求未执行：动态代理暂不可用")
+            raise _EastmoneyDataUnavailable("东财数据暂不可用")
 
-    last_exc = None
-    proxy_replaced = False
-    for attempt in range(retries):
-        wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
-        if wait > 0:
-            time.sleep(wait + random.uniform(0.1, 0.5))
-        try:
-            resp = _EM_SESSION.get(
-                url, params=params, headers=headers, timeout=timeout, **kwargs
-            )
-            _em_last_call[0] = time.time()
-            if resp.status_code >= 500 and attempt < retries - 1:
-                time.sleep(0.5 * (2 ** attempt))
-                continue
-            return resp
-        except _requests.exceptions.RequestException as e:
-            _em_last_call[0] = time.time()
-            last_exc = e
-            # 短效代理失效或被目标站拒绝时，仅换一次代理后重试，避免三次重试消耗三条
-            # 按量 IP；不影响静态代理。
-            if _juliangip_api_url and not _em_proxy and not proxy_replaced:
-                proxy_replaced = _refresh_em_dynamic_proxy(force=True)
-            if attempt < retries - 1:
-                time.sleep(0.5 * (2 ** attempt))
-                continue
-            logger.warning("东财请求失败（%s）", type(e).__name__)
-            raise _EastmoneyDataUnavailable("东财数据暂不可用") from None
-    if last_exc:
-        raise last_exc
-    raise _EastmoneyDataUnavailable("东财数据暂不可用")
+        last_exc = None
+        proxy_rotations = 0
+        for attempt in range(retries):
+            wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
+            if wait > 0:
+                time.sleep(wait + random.uniform(0.1, 0.5))
+            try:
+                resp = _EM_SESSION.get(
+                    url, params=params, headers=headers, timeout=timeout, **kwargs
+                )
+                _em_last_call[0] = time.time()
+                # 429 is a rate-limit/temporary-ban response; it is as unsafe
+                # to accept as a 5xx. Retry it through the same constrained
+                # path rather than allowing callers to parse an error payload.
+                retryable_status = resp.status_code == 429 or resp.status_code >= 500
+                if retryable_status and attempt < retries - 1:
+                    if (
+                        _juliangip_api_url
+                        and not _em_proxy
+                        and proxy_rotations < _EM_PROXY_MAX_ROTATIONS
+                        and _refresh_em_dynamic_proxy(force=True)
+                    ):
+                        proxy_rotations += 1
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                if retryable_status:
+                    logger.warning("东财请求失败（HTTP %s）", resp.status_code)
+                    raise _EastmoneyDataUnavailable("东财数据暂不可用")
+                return resp
+            except _requests.exceptions.RequestException as e:
+                _em_last_call[0] = time.time()
+                last_exc = e
+                if (
+                    _juliangip_api_url
+                    and not _em_proxy
+                    and proxy_rotations < _EM_PROXY_MAX_ROTATIONS
+                    and _refresh_em_dynamic_proxy(force=True)
+                ):
+                    proxy_rotations += 1
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                logger.warning("东财请求失败（%s）", type(e).__name__)
+                raise _EastmoneyDataUnavailable("东财数据暂不可用") from None
+        if last_exc:
+            raise last_exc
+        raise _EastmoneyDataUnavailable("东财数据暂不可用")
 
 
 def _eastmoney_datacenter(
@@ -2186,6 +2218,11 @@ def get_fund_flow(
                             f"| small={float(parts[2])/1e4:.0f} "
                             f"| super={float(parts[5])/1e4:.0f}"
                         )
+            else:
+                # The historical endpoint is the durable input outside market
+                # hours. An empty response is not a usable “normal” result for
+                # a full analysis and must reach the quality ledger as failure.
+                raise _EastmoneyDataUnavailable("东财数据暂不可用")
 
         return "\n".join(lines)
 
@@ -2469,7 +2506,7 @@ def get_industry_comparison(
                     lines.append(f"  ... (showing top/bottom {top_n})")
                     break
         else:
-            lines.append("行业数据获取为空。")
+            raise _EastmoneyDataUnavailable("东财数据暂不可用")
     except Exception as e:
         lines.append(_eastmoney_data_missing("行业横向对比数据", e))
 

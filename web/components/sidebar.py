@@ -18,6 +18,7 @@ from web.history import (
     get_incomplete_history,
     record_incomplete_task,
 )
+from web.trading_dates import most_recent_weekday
 
 # Provider display names in recommended order
 _PROVIDERS: list[tuple[str, str]] = [
@@ -266,9 +267,10 @@ def render_sidebar() -> None:
         )
         st.session_state["stock_input_autofocused"] = True
 
+    default_trade_date = most_recent_weekday(date.today())
     trade_date = st.date_input(
         "分析日期",
-        value=date.today(),
+        value=default_trade_date,
         key="input_date",
     )
 
@@ -291,9 +293,15 @@ def render_sidebar() -> None:
         else:
             if resolved_code != ticker.strip():
                 st.success(f"✅ {ticker.strip()} → {resolved_code}")
+            effective_trade_date = most_recent_weekday(trade_date)
+            if effective_trade_date != trade_date:
+                st.info(
+                    f"所选日期为周末，A 股未开市；将使用最近交易日 "
+                    f"{effective_trade_date.strftime('%Y-%m-%d')}。"
+                )
             st.session_state["start_analysis"] = {
                 "ticker": resolved_code,
-                "trade_date": trade_date.strftime("%Y-%m-%d"),
+                "trade_date": effective_trade_date.strftime("%Y-%m-%d"),
                 "fresh": True,
             }
             st.session_state["viewing_history"] = None

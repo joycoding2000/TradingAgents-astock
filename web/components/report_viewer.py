@@ -9,6 +9,11 @@ import streamlit as st
 
 from web.pdf_export import generate_markdown, generate_pdf
 from web.plain_language import make_conclusion_plain
+from web.report_safety import (
+    DATA_INCOMPLETE_NOTICE,
+    display_signal,
+    is_data_limited,
+)
 from web.stock_display import normalize_stock_mentions, stock_display_label
 
 
@@ -18,6 +23,12 @@ def _strip_think(text: str) -> str:
 
 def _signal_style(signal: str) -> tuple[str, str]:
     s = signal.upper()
+    if "DATAINCOMPLETE" in s:
+        return "#f97316", "数据不完整"
+    if "OVERWEIGHT" in s:
+        return "#22c55e", "偏向买入"
+    if "UNDERWEIGHT" in s:
+        return "#f97316", "偏向卖出"
     if "BUY" in s:
         return "#22c55e", "买入"
     if "SELL" in s:
@@ -43,7 +54,7 @@ def _safe_filename_label(label: str) -> str:
 
 def _display_report_text(text: Any, ticker: str, final_state: dict[str, Any]) -> str:
     cleaned = _strip_think(str(text))
-    return normalize_stock_mentions(cleaned, ticker, final_state)
+    return make_conclusion_plain(normalize_stock_mentions(cleaned, ticker, final_state))
 
 
 def render_report(
@@ -55,6 +66,7 @@ def render_report(
 ) -> None:
     """Render the full analysis report."""
 
+    signal = display_signal(final_state, signal)
     color, cn_signal = _signal_style(signal)
     ticker_label = stock_display_label(ticker, final_state)
 
@@ -120,21 +132,30 @@ def render_report(
 
     st.markdown("---")
 
+    if is_data_limited(final_state):
+        st.warning(DATA_INCOMPLETE_NOTICE)
+        dqs = final_state.get("data_quality_summary", "")
+        if dqs:
+            with st.expander("查看数据状态", expanded=True):
+                st.markdown(_display_report_text(dqs, ticker, final_state))
+        st.info("为避免不完整数据造成误导，本次不展示具体操作建议和详细分析内容。")
+        return
+
     final_decision = final_state.get("final_trade_decision", "")
     inv_plan = final_state.get("investment_plan", "")
     conclusion = final_decision or inv_plan
     if conclusion:
         st.markdown("### 👔 一眼看懂的结论")
         displayed = _display_report_text(conclusion, ticker, final_state)
-        st.markdown(make_conclusion_plain(displayed))
+        st.markdown(displayed)
         st.markdown("---")
 
     if final_decision and inv_plan:
         with st.expander("查看研究阶段的建议", expanded=False):
             displayed = _display_report_text(inv_plan, ticker, final_state)
-            st.markdown(make_conclusion_plain(displayed))
+            st.markdown(displayed)
 
-    st.markdown("### 📊 分析师报告")
+    st.markdown("### 📊 分项分析（仅代表单个角度，不等于最终结论）")
 
     for key, title in _ANALYST_SECTIONS:
         content = final_state.get(key, "")

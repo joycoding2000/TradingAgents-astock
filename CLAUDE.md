@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/joycoding2000/TradingAgents-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.2.24
+- **当前版本**: 0.2.25
 
 ## 架构
 
