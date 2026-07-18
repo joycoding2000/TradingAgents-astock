@@ -31,6 +31,9 @@ DEFAULT_CONFIG = {
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "Chinese",
+    # full: seven analysts; fast: market + news + fundamentals. Both keep the
+    # same code-enforced data quality gate and downstream decision safeguards.
+    "analysis_mode": "full",
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,

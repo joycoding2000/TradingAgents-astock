@@ -362,6 +362,9 @@ class _ReportPDF(FPDF):
         self.ticker_label = stock_display_label(ticker, final_state)
         self.trade_date = trade_date
         self.signal = signal
+        self.analysis_mode = (
+            "快速分析" if (final_state or {}).get("analysis_mode") == "fast" else "完整分析"
+        )
         regular_font, bold_font = _find_cjk_fonts()
 
         try:
@@ -431,6 +434,8 @@ class _ReportPDF(FPDF):
         self._use_font("", 14)
         self.set_text_color(100, 100, 100)
         self.cell(0, 10, f"分析日期: {self.trade_date}", align="C")
+        self.ln(8)
+        self.cell(0, 10, f"分析模式: {self.analysis_mode}", align="C")
         self.ln(8)
         self.cell(0, 10, f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C")
         self.ln(20)
@@ -683,6 +688,7 @@ def generate_markdown(final_state: dict[str, Any], ticker: str, trade_date: str,
         "",
         f"- **股票代码**：{ticker_label}",
         f"- **分析日期**：{trade_date}",
+        f"- **分析模式**：{'快速分析（覆盖范围较少）' if final_state.get('analysis_mode') == 'fast' else '完整分析'}",
         f"- **生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"- **交易信号**：**{signal_label(signal)}**",
         "",

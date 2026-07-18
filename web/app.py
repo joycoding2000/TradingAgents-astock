@@ -208,7 +208,7 @@ if not _render_login_gate():
 
 # ── Build config ─────────────────────────────────────────────────────────────
 
-def _build_config() -> dict:
+def _build_config(analysis_mode: str | None = None) -> dict:
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"] = st.session_state.get("llm_provider", "minimax")
     config["deep_think_llm"] = st.session_state.get("deep_think_llm", "MiniMax-M2.7")
@@ -227,6 +227,9 @@ def _build_config() -> dict:
     config["max_risk_discuss_rounds"] = 1
     config["checkpoint_enabled"] = True
     config["output_language"] = "Chinese"
+    config["analysis_mode"] = (
+        analysis_mode or st.session_state.get("analysis_mode", "full")
+    )
     return config
 
 
@@ -253,13 +256,14 @@ if start_req:
     tracker = ProgressTracker(
         ticker=start_req["ticker"],
         trade_date=start_req["trade_date"],
+        analysis_mode=start_req.get("analysis_mode", "full"),
     )
     st.session_state["tracker"] = tracker
     st.session_state["viewing_history"] = None
     run_analysis_in_thread(
         ticker=start_req["ticker"],
         trade_date=start_req["trade_date"],
-        config=_build_config(),
+        config=_build_config(start_req.get("analysis_mode")),
         tracker=tracker,
     )
 

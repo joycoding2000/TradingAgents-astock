@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import json
 from datetime import datetime, timedelta
+import time
 from typing import Dict, Any, Tuple, List, Optional
 
 import yfinance as yf
@@ -22,7 +23,7 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
-from tradingagents.agents.quality_ledger import create_tracked_tool_node
+from tradingagents.agents.quality_ledger import RunToolCache, create_tracked_tool_node
 from tradingagents.dataflows.config import set_config
 
 # Import the new abstract tool methods from agent_utils
@@ -52,6 +53,17 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
+from .performance import (
+    ModelTimingCallback,
+    make_timing_entry,
+    summarize_performance_ledger,
+)
+
+
+FULL_ANALYSTS = [
+    "market", "social", "news", "fundamentals", "policy", "hot_money", "lockup",
+]
+FAST_ANALYSTS = ["market", "news", "fundamentals"]
 
 
 class TradingAgentsGraph:
@@ -59,7 +71,7 @@ class TradingAgentsGraph:
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals", "policy", "hot_money", "lockup"],
+        selected_analysts=None,
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
@@ -73,8 +85,16 @@ class TradingAgentsGraph:
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
         """
         self.debug = debug
-        self.config = config or DEFAULT_CONFIG
+        self.config = (config or DEFAULT_CONFIG).copy()
         self.callbacks = callbacks or []
+        self.analysis_mode = str(self.config.get("analysis_mode", "full")).lower()
+        if self.analysis_mode not in {"full", "fast"}:
+            raise ValueError("analysis_mode must be 'full' or 'fast'")
+        if selected_analysts is None:
+            selected_analysts = (
+                FAST_ANALYSTS if self.analysis_mode == "fast" else FULL_ANALYSTS
+            )
+        self.selected_analysts = list(selected_analysts)
 
         # Update the interface's config
         set_config(self.config)
@@ -87,8 +107,9 @@ class TradingAgentsGraph:
         llm_kwargs = self._get_provider_kwargs()
 
         # Add callbacks to kwargs if provided (passed to LLM constructor)
-        if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
+        self.model_timing = ModelTimingCallback()
+        llm_callbacks = [*self.callbacks, self.model_timing]
+        llm_kwargs["callbacks"] = llm_callbacks
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
@@ -107,6 +128,10 @@ class TradingAgentsGraph:
         self.quick_thinking_llm = quick_client.get_llm()
         
         self.memory_log = TradingMemoryLog(self.config)
+
+        # One cache exists only for this graph/run. It is cleared at prepare time
+        # and never crosses analyses, so realtime data cannot leak into another run.
+        self.tool_cache = RunToolCache()
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -133,7 +158,7 @@ class TradingAgentsGraph:
         self.log_states_dict = {}  # date to full state dict
 
         # Set up the graph: keep the workflow for recompilation with a checkpointer.
-        self.workflow = self.graph_setup.setup_graph(selected_analysts)
+        self.workflow = self.graph_setup.setup_graph(self.selected_analysts)
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
@@ -168,13 +193,13 @@ class TradingAgentsGraph:
                     get_stock_data,
                     # Technical indicators
                     get_indicators,
-                ]
+                ], self.tool_cache
             ),
             "social": create_tracked_tool_node("social",
                 [
                     # News tools for social media analysis
                     get_news,
-                ]
+                ], self.tool_cache
             ),
             "news": create_tracked_tool_node("news",
                 [
@@ -182,7 +207,7 @@ class TradingAgentsGraph:
                     get_news,
                     get_global_news,
                     get_insider_transactions,
-                ]
+                ], self.tool_cache
             ),
             "fundamentals": create_tracked_tool_node("fundamentals",
                 [
@@ -192,13 +217,13 @@ class TradingAgentsGraph:
                     get_income_statement,
                     get_profit_forecast,
                     get_industry_comparison,
-                ]
+                ], self.tool_cache
             ),
             "policy": create_tracked_tool_node("policy",
                 [
                     get_news,
                     get_global_news,
-                ]
+                ], self.tool_cache
             ),
             "hot_money": create_tracked_tool_node("hot_money",
                 [
@@ -211,7 +236,7 @@ class TradingAgentsGraph:
                     get_fund_flow,
                     get_dragon_tiger_board,
                     get_industry_comparison,
-                ]
+                ], self.tool_cache
             ),
             "lockup": create_tracked_tool_node("lockup",
                 [
@@ -219,7 +244,7 @@ class TradingAgentsGraph:
                     get_news,
                     get_fundamentals,
                     get_lockup_expiry,
-                ]
+                ], self.tool_cache
             ),
         }
 
@@ -378,6 +403,14 @@ class TradingAgentsGraph:
         # Resolve any pending memory-log entries for this ticker before the pipeline runs.
         self._resolve_pending_entries(company_name)
 
+        # Start a clean run-local measurement/cache segment after reflection work.
+        if hasattr(self, "tool_cache"):
+            self.tool_cache.clear()
+        if hasattr(self, "model_timing"):
+            self.model_timing.reset()
+        self._run_started_at = datetime.now().astimezone().isoformat()
+        self._run_started_perf = time.perf_counter()
+
         checkpoint_enabled = self.config.get("checkpoint_enabled")
         resume_step = None
 
@@ -416,17 +449,34 @@ class TradingAgentsGraph:
         # LangGraph would start a new run and replay completed nodes.
         past_context = self.memory_log.get_past_context(company_name)
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, past_context=past_context
+            company_name,
+            trade_date,
+            past_context=past_context,
+            analysis_mode=getattr(self, "analysis_mode", "full"),
+            selected_analysts=getattr(self, "selected_analysts", FULL_ANALYSTS),
         )
         return init_agent_state, args, resume_step
 
     def finalize_graph_run(self, company_name, trade_date, final_state):
         """Persist a completed run and clear its checkpoint."""
+        performance_ledger = final_state.setdefault("performance_ledger", [])
+        if hasattr(self, "model_timing"):
+            performance_ledger.extend(self.model_timing.snapshot())
+        if hasattr(self, "_run_started_perf"):
+            performance_ledger.append(make_timing_entry(
+                kind="run",
+                name="graph_execution",
+                status="success",
+                started_at=self._run_started_at,
+                duration_ms=max(
+                    0,
+                    round((time.perf_counter() - self._run_started_perf) * 1000),
+                ),
+                stage="pipeline",
+            ))
+
         self._apply_data_quality_limit(final_state)
         self.curr_state = final_state
-
-        # Log state to disk.
-        self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
         # Never let an unsupported BUY/SELL recommendation from an incomplete
@@ -434,17 +484,58 @@ class TradingAgentsGraph:
         decision_for_memory = final_state["final_trade_decision"]
         if final_state.get("data_quality_status") == "低":
             decision_for_memory = "关键数据未完整返回，本次未形成可执行结论。"
+        memory_started_at = datetime.now().astimezone().isoformat()
+        memory_started = time.perf_counter()
         self.memory_log.store_decision(
             ticker=company_name,
             trade_date=trade_date,
             final_trade_decision=decision_for_memory,
         )
+        performance_ledger.append(make_timing_entry(
+            kind="persistence",
+            name="memory_log",
+            status="success",
+            started_at=memory_started_at,
+            duration_ms=round((time.perf_counter() - memory_started) * 1000),
+            stage="persistence",
+        ))
 
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):
+            checkpoint_started_at = datetime.now().astimezone().isoformat()
+            checkpoint_started = time.perf_counter()
             clear_checkpoint(
                 self.config["data_cache_dir"], company_name, str(trade_date)
             )
+            performance_ledger.append(make_timing_entry(
+                kind="persistence",
+                name="checkpoint_cleanup",
+                status="success",
+                started_at=checkpoint_started_at,
+                duration_ms=round((time.perf_counter() - checkpoint_started) * 1000),
+                stage="persistence",
+            ))
+
+        # Persist once to measure real JSON serialization/write time, then append
+        # that sanitized duration and rewrite the final auditable payload.
+        final_state["performance_summary"] = summarize_performance_ledger(
+            performance_ledger
+        )
+        log_started_at = datetime.now().astimezone().isoformat()
+        log_started = time.perf_counter()
+        self._log_state(trade_date, final_state)
+        performance_ledger.append(make_timing_entry(
+            kind="persistence",
+            name="result_json",
+            status="success",
+            started_at=log_started_at,
+            duration_ms=round((time.perf_counter() - log_started) * 1000),
+            stage="persistence",
+        ))
+        final_state["performance_summary"] = summarize_performance_ledger(
+            performance_ledger
+        )
+        self._log_state(trade_date, final_state)
 
         # A critical data failure is not an investment rating. Do not let a
         # BUY/SELL word retained in the internal audit text become a user-facing
@@ -499,6 +590,8 @@ class TradingAgentsGraph:
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
+            "analysis_mode": final_state.get("analysis_mode", "full"),
+            "selected_analysts": final_state.get("selected_analysts", FULL_ANALYSTS),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
@@ -512,6 +605,8 @@ class TradingAgentsGraph:
                 "data_quality_constraints", ""
             ),
             "tool_execution_ledger": final_state.get("tool_execution_ledger", []),
+            "performance_ledger": final_state.get("performance_ledger", []),
+            "performance_summary": final_state.get("performance_summary", {}),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

@@ -2,6 +2,7 @@ import operator
 from typing import Annotated, Any
 from typing_extensions import TypedDict
 from langgraph.graph import MessagesState
+from langgraph.graph.message import add_messages
 
 
 # Researcher team state
@@ -50,6 +51,19 @@ class AgentState(MessagesState):
 
     sender: Annotated[str, "Agent that sent this message"]
 
+    # Each analyst owns an isolated message channel. Sharing MessagesState.messages
+    # across parallel branches would mix unrelated tool calls and responses.
+    market_messages: Annotated[list[Any], add_messages]
+    social_messages: Annotated[list[Any], add_messages]
+    news_messages: Annotated[list[Any], add_messages]
+    fundamentals_messages: Annotated[list[Any], add_messages]
+    policy_messages: Annotated[list[Any], add_messages]
+    hot_money_messages: Annotated[list[Any], add_messages]
+    lockup_messages: Annotated[list[Any], add_messages]
+
+    analysis_mode: Annotated[str, "full or fast analysis mode"]
+    selected_analysts: Annotated[list[str], "Analysts enabled for this run"]
+
     # research step
     market_report: Annotated[str, "Report from the Market Analyst"]
     sentiment_report: Annotated[str, "Report from the Social Media Analyst"]
@@ -70,6 +84,10 @@ class AgentState(MessagesState):
     tool_execution_ledger: Annotated[
         list[dict[str, Any]], operator.add
     ]  # 每次工具调用的无敏感状态记录
+    performance_ledger: Annotated[
+        list[dict[str, Any]], operator.add
+    ]  # 节点、模型和工具耗时；不含提示词、正文或网络地址
+    performance_summary: Annotated[dict[str, Any], "Aggregated performance metrics"]
 
     # researcher team discussion step
     investment_debate_state: Annotated[

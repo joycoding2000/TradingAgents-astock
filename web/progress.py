@@ -32,6 +32,7 @@ class ProgressTracker:
 
     ticker: str = ""
     trade_date: str = ""
+    analysis_mode: str = "full"
     start_time: float = field(default_factory=time.time)
 
     is_running: bool = False

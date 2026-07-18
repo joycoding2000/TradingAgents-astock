@@ -283,6 +283,7 @@ streamlit run web/app.py
 | `quick_think_llm` | `"MiniMax-M2.7-highspeed"` | 所有 Analyst / Researcher / Trader 用的模型 |
 | `backend_url` | `None` | 自定义 API 端点 / 第三方中转网关。可在 Web UI 侧边栏填写，或用 `.env` 的 `BACKEND_URL`；方便国内通过代理访问 Claude / OpenAI |
 | `output_language` | `"Chinese"` | 报告输出语言（内部辩论始终英文） |
+| `analysis_mode` | `"full"` | `full` 为七角度完整分析；`fast` 为技术、新闻、基本面快速分析，两者均执行质量门控 |
 | `max_debate_rounds` | `1` | Bull vs Bear 辩论轮数 |
 | `max_risk_discuss_rounds` | `1` | 风险三方辩论轮数 |
 | `data_vendors` | 全部 `"a_stock"` | 数据供应商路由 |

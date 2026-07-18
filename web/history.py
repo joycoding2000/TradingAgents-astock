@@ -21,7 +21,7 @@ def _results_dir() -> Path:
     return Path.home() / ".tradingagents" / "logs"
 
 
-def get_history() -> list[dict[str, str]]:
+def get_history(include_mode: bool = False) -> list[dict[str, str]]:
     """Scan saved analysis logs and return a sorted list (newest first).
 
     Each entry: {"ticker": "300750", "date": "2026-05-12", "path": "/abs/path/...json"}
@@ -37,9 +37,25 @@ def get_history() -> list[dict[str, str]]:
             continue
         date = match.group(1)
         ticker = log_file.parent.parent.name
-        entries.append({"ticker": ticker, "date": date, "path": str(log_file)})
+        entries.append({
+            "ticker": ticker,
+            "date": date,
+            "path": str(log_file),
+        })
 
     entries.sort(key=lambda e: e["date"], reverse=True)
+    # The sidebar shows only 20 entries. Avoid parsing every potentially large
+    # report JSON on every Streamlit rerender while an analysis is running.
+    if include_mode:
+        for entry in entries[:20]:
+            mode = "full"
+            try:
+                with open(entry["path"], encoding="utf-8") as f:
+                    payload = json.load(f)
+                mode = "fast" if payload.get("analysis_mode") == "fast" else "full"
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+            entry["analysis_mode"] = mode
     return entries
 
 
@@ -113,6 +129,7 @@ def record_incomplete_task(
     status: str,
     error: str | None = None,
     completed_stages: list[str] | None = None,
+    analysis_mode: str | None = None,
 ) -> None:
     """Upsert a resumable task entry."""
     ticker = ticker.strip().upper()
@@ -128,8 +145,7 @@ def record_incomplete_task(
             != _completed_key(ticker, trade_date)
         ]
         now = time.time()
-        entries.append(
-            {
+        entry = {
                 "ticker": ticker,
                 "trade_date": trade_date,
                 "status": status,
@@ -137,7 +153,9 @@ def record_incomplete_task(
                 "completed_stages": completed_stages or [],
                 "updated_at": now,
             }
-        )
+        if analysis_mode in {"full", "fast"}:
+            entry["analysis_mode"] = analysis_mode
+        entries.append(entry)
         entries.sort(key=lambda e: float(e.get("updated_at", 0)), reverse=True)
         _save_incomplete_index(entries)
 

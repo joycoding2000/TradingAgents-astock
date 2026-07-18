@@ -84,6 +84,7 @@ def _render_analysis_controls(raw_ticker: str, trade_date_value: date) -> None:
                 tracker.trade_date,
                 status="paused",
                 completed_stages=tracker.completed_stages,
+                analysis_mode=tracker.analysis_mode,
             )
         st.rerun()
 
@@ -100,6 +101,7 @@ def _render_analysis_controls(raw_ticker: str, trade_date_value: date) -> None:
                 tracker.trade_date,
                 status="running",
                 completed_stages=tracker.completed_stages,
+                analysis_mode=tracker.analysis_mode,
             )
         st.rerun()
 
@@ -242,6 +244,23 @@ def render_sidebar() -> None:
         help="支持6位A股代码、中文股票名称或名称简拼，如 600519、贵州茅台、gzmt",
     )
 
+    tracker = st.session_state.get("tracker")
+    mode_label = st.radio(
+        "分析模式",
+        ["完整分析", "快速分析"],
+        horizontal=True,
+        key="analysis_mode_label",
+        disabled=tracker is not None and tracker.is_running,
+        help=(
+            "完整分析使用七个研究角度；快速分析仅保留技术、新闻和基本面，"
+            "覆盖范围较少，但仍执行数据质量门控。"
+        ),
+    )
+    analysis_mode = "fast" if mode_label == "快速分析" else "full"
+    st.session_state["analysis_mode"] = analysis_mode
+    if analysis_mode == "fast":
+        st.caption("快速分析覆盖较少，结论仅供初步参考；需要全面判断请选择完整分析。")
+
     # Streamlit currently has no autofocus option for text_input.  On the
     # first render of a session, focus the stock box from a tiny same-origin
     # component so users can type immediately without reaching for the mouse.
@@ -304,6 +323,7 @@ def render_sidebar() -> None:
                 "ticker": resolved_code,
                 "trade_date": effective_trade_date.strftime("%Y-%m-%d"),
                 "fresh": True,
+                "analysis_mode": analysis_mode,
             }
             st.session_state["viewing_history"] = None
 
@@ -335,20 +355,22 @@ def render_sidebar() -> None:
                 st.session_state["start_analysis"] = {
                     "ticker": t,
                     "trade_date": d,
+                    "analysis_mode": entry.get("analysis_mode", "full"),
                 }
                 st.session_state["viewing_history"] = None
 
     st.markdown("---")
     st.markdown("#### 历史记录")
 
-    history = get_history()
+    history = get_history(include_mode=True)
     if not history:
         st.caption("暂无历史记录")
         return
 
     for entry in history[:20]:
         t, d = entry["ticker"], entry["date"]
-        label = f"{t}  ·  {d}"
+        mode = "快速" if entry.get("analysis_mode") == "fast" else "完整"
+        label = f"{t}  ·  {d}  ·  {mode}"
         if st.button(label, key=f"hist_{t}_{d}", use_container_width=True):
             st.session_state["viewing_history"] = entry["path"]
             st.session_state["start_analysis"] = None

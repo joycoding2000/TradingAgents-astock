@@ -7,10 +7,17 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import copy
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
+import threading
+import time
 from typing import Any, Iterable
+
+
+logger = logging.getLogger(__name__)
 
 
 STATUS_SUCCESS = "success"
@@ -131,6 +138,113 @@ def _tool_label(tool_name: str) -> str:
     return _TOOL_LABELS.get(tool_name, "数据工具")
 
 
+class RunToolCache:
+    """Single-analysis cache with single-flight protection for duplicate calls."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._values: dict[str, Any] = {}
+        self._inflight: dict[str, threading.Event] = {}
+        self._failed_timings: dict[str, list[dict[str, Any]]] = {}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._values.clear()
+            self._inflight.clear()
+            self._failed_timings.clear()
+
+    def pop_failed_timing(self, request_key: str) -> dict[str, Any]:
+        with self._lock:
+            timings = self._failed_timings.get(request_key, [])
+            if not timings:
+                return {}
+            timing = timings.pop(0)
+            if not timings:
+                self._failed_timings.pop(request_key, None)
+            return timing
+
+    def execute(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        function: Any,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Return content plus non-sensitive cache/timing metadata."""
+        key = _request_key({"name": tool_name, "args": args})
+        started_at = datetime.now(timezone.utc).isoformat()
+        started = time.perf_counter()
+
+        while True:
+            with self._lock:
+                if key in self._values:
+                    return self._values[key], {
+                        "cache_hit": True,
+                        "started_at": started_at,
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                        "duration_ms": max(0, round((time.perf_counter() - started) * 1000)),
+                    }
+                event = self._inflight.get(key)
+                if event is None:
+                    event = threading.Event()
+                    self._inflight[key] = event
+                    is_owner = True
+                else:
+                    is_owner = False
+
+            if is_owner:
+                break
+            event.wait()
+
+        try:
+            result = function(**args)
+            status = classify_tool_result(result)
+            if status in {STATUS_SUCCESS, STATUS_NORMAL_EMPTY}:
+                with self._lock:
+                    self._values[key] = result
+            return result, {
+                "cache_hit": False,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "duration_ms": max(0, round((time.perf_counter() - started) * 1000)),
+            }
+        except Exception:
+            failed_timing = {
+                "cache_hit": False,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "duration_ms": max(0, round((time.perf_counter() - started) * 1000)),
+            }
+            with self._lock:
+                self._failed_timings.setdefault(key, []).append(failed_timing)
+            raise
+        finally:
+            with self._lock:
+                completed = self._inflight.pop(key, None)
+                if completed is not None:
+                    completed.set()
+
+
+def _cached_tool(tool: Any, cache: RunToolCache) -> Any:
+    """Copy a StructuredTool and cache its validated synchronous function call."""
+    original_function = tool.func
+    wrapped = copy(tool)
+
+    def invoke_cached(**kwargs: Any) -> tuple[Any, dict[str, Any]]:
+        return cache.execute(tool.name, kwargs, original_function)
+
+    wrapped.func = invoke_cached
+    # ToolNode keeps content unchanged for the LLM and attaches the second value
+    # only as ToolMessage.artifact for the internal ledger.
+    wrapped.response_format = "content_and_artifact"
+    return wrapped
+
+
+def _handle_tool_error(exc: Exception) -> str:
+    """Log only the error type and return a recoverable product-safe message."""
+    logger.warning("数据工具执行异常（%s）", type(exc).__name__)
+    return "工具调用失败"
+
+
 def classify_tool_result(content: Any, message_status: str | None = None) -> str:
     """将工具结果归为成功、正常空结果、失败或输入无效。"""
     text = _text(content).strip()
@@ -146,7 +260,10 @@ def classify_tool_result(content: Any, message_status: str | None = None) -> str
 
 
 def build_tool_ledger(
-    analyst: str, tool_calls: Iterable[dict[str, Any]], tool_messages: Iterable[Any]
+    analyst: str,
+    tool_calls: Iterable[dict[str, Any]],
+    tool_messages: Iterable[Any],
+    cache: RunToolCache | None = None,
 ) -> list[dict[str, Any]]:
     """将一次 ToolNode 执行转换为无敏感正文的台账记录。"""
     by_call_id = {
@@ -162,6 +279,11 @@ def build_tool_ledger(
         status = classify_tool_result(
             getattr(message, "content", ""), getattr(message, "status", None)
         )
+        artifact = getattr(message, "artifact", None)
+        metadata = artifact if isinstance(artifact, dict) else {}
+        request_key = _request_key(call)
+        if not metadata and cache is not None:
+            metadata = cache.pop_failed_timing(request_key)
         ledger.append(
             {
                 "tool_name": tool_name,
@@ -170,26 +292,61 @@ def build_tool_ledger(
                 "critical": tool_name in BLOCKING_TOOLS,
                 "impact": "基础" if tool_name in BLOCKING_TOOLS else "分项",
                 "tool_call_id": call_id,
-                "request_key": _request_key(call),
+                "request_key": request_key,
                 "recorded_at": recorded_at,
+                "cache_hit": bool(metadata.get("cache_hit", False)),
+                "started_at": metadata.get("started_at", recorded_at),
+                "finished_at": metadata.get("finished_at", recorded_at),
+                "duration_ms": max(0, int(metadata.get("duration_ms", 0))),
             }
         )
     return ledger
 
 
-def create_tracked_tool_node(analyst: str, tools: list[Any]):
+def create_tracked_tool_node(
+    analyst: str,
+    tools: list[Any],
+    cache: RunToolCache | None = None,
+):
     """创建 ToolNode 包装器，在不改变 ToolMessage 的前提下附加台账。"""
     from langgraph.prebuilt import ToolNode
 
-    node = ToolNode(tools)
+    cache = cache or RunToolCache()
+    node = ToolNode(
+        [_cached_tool(tool, cache) for tool in tools],
+        # A tool exception must become a recoverable, sanitized ToolMessage so
+        # the analyst can retry/correct itself and the quality ledger can mark
+        # failure. Never expose an upstream exception body to the report.
+        handle_tool_errors=_handle_tool_error,
+    )
 
     def invoke(state, config=None):
         # ToolNode 需要沿用 LangGraph 传入的 runtime/config；否则工具节点在图外
         # 单独调用时会缺少运行时上下文。
         outcome = node.invoke(state, config)
         calls = getattr(state["messages"][-1], "tool_calls", [])
-        ledger = build_tool_ledger(analyst, calls, outcome.get("messages", []))
-        return {**outcome, "tool_execution_ledger": ledger}
+        ledger = build_tool_ledger(
+            analyst, calls, outcome.get("messages", []), cache=cache
+        )
+        performance = [
+            {
+                "kind": "tool",
+                "name": entry["tool_name"],
+                "stage": analyst,
+                "analyst": analyst,
+                "status": entry["status"],
+                "cache_hit": entry["cache_hit"],
+                "started_at": entry["started_at"],
+                "finished_at": entry["finished_at"],
+                "duration_ms": entry["duration_ms"],
+            }
+            for entry in ledger
+        ]
+        return {
+            **outcome,
+            "tool_execution_ledger": ledger,
+            "performance_ledger": performance,
+        }
 
     return invoke
 
@@ -301,6 +458,11 @@ def format_tool_ledger_summary(summary: dict[str, Any]) -> str:
     for entry in sorted(summary["latest"], key=lambda item: item["tool_name"]):
         importance = "基础" if entry.get("tool_name") in BLOCKING_TOOLS else "分项"
         status = _STATUS_LABELS.get(entry.get("status"), "未知")
+        if entry.get("cache_hit") and entry.get("status") in {
+            STATUS_SUCCESS,
+            STATUS_NORMAL_EMPTY,
+        }:
+            status += "（复用本次已获取数据）"
         lines.append(f"{_tool_label(entry['tool_name'])} | {status} | {importance}")
     if summary["claim_constraints"]:
         lines.extend(["", "### 本次结论使用限制"])

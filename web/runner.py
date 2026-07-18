@@ -140,6 +140,7 @@ def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker) -
                 trade_date,
                 status="paused" if tracker.is_paused else "running",
                 completed_stages=tracker.completed_stages,
+                analysis_mode=tracker.analysis_mode,
             )
 
             s = stats.get_stats()
@@ -175,6 +176,7 @@ def run_analysis_in_thread(
     """Launch the pipeline in a daemon thread. Returns the thread handle."""
     tracker.ticker = ticker
     tracker.trade_date = trade_date
+    tracker.analysis_mode = str(config.get("analysis_mode", "full"))
     tracker.is_running = True
     tracker.mark_stage_active("market")
     record_incomplete_task(
@@ -182,6 +184,7 @@ def run_analysis_in_thread(
         trade_date,
         status="running",
         completed_stages=tracker.completed_stages,
+        analysis_mode=tracker.analysis_mode,
     )
 
     def _target() -> None:
@@ -201,6 +204,7 @@ def run_analysis_in_thread(
                 status="error",
                 error=str(exc),
                 completed_stages=tracker.completed_stages,
+                analysis_mode=tracker.analysis_mode,
             )
             tracker.mark_error(str(exc))
 

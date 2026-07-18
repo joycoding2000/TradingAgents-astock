@@ -80,14 +80,17 @@ def _build_review_prompt(
     trade_date: str,
     ticker: str,
     tool_ledger_summary: str = "",
+    selected_analysts: list[str] | None = None,
 ) -> str:
     """Build the LLM review prompt.
 
     v0.2.22: 把硬检查结果（客观缺失清单）喂给 LLM，让 LLM 在已知硬检查事实的
     基础上判断缺失项是否必采关键项，给出与硬检查一致的最终评级，消除 C vs A 矛盾。
     """
+    enabled = selected_analysts or list(REPORT_FIELDS)
     report_sections = []
-    for analyst_type, field in REPORT_FIELDS.items():
+    for analyst_type in enabled:
+        field = REPORT_FIELDS[analyst_type]
         name = ANALYST_NAMES[analyst_type]
         content = reports.get(field, "（未运行）")
         if not content:
@@ -99,12 +102,19 @@ def _build_review_prompt(
     all_reports = "\n\n".join(report_sections)
 
     hard_lines = []
-    for analyst_type, (grade, detail) in hard_results.items():
+    for analyst_type in enabled:
+        grade, detail = hard_results[analyst_type]
         name = ANALYST_NAMES[analyst_type]
         hard_lines.append(f"- {name}: [{grade}] {detail}")
     hard_summary = "\n".join(hard_lines)
 
-    return f"""你是数据质量审核员。以下是 7 位分析师对 {ticker} 在 {trade_date} 的研究报告。请逐一审核。
+    review_rows = "\n".join(
+        f"| {ANALYST_NAMES[analyst_type]} | A/B/C/D/F | 是否匹配交易日 | "
+        "列出缺失的必采项 | 简要说明 |"
+        for analyst_type in enabled
+    )
+
+    return f"""你是数据质量审核员。以下是 {len(enabled)} 位分析师对 {ticker} 在 {trade_date} 的研究报告。请逐一审核。
 
 ## 硬检查结果（代码层客观事实，供参考，非最终评级）
 {hard_summary}
@@ -126,13 +136,7 @@ def _build_review_prompt(
 
 | 分析师 | 评级 | 数据时效 | 缺失项 | 备注 |
 |--------|------|----------|--------|------|
-| 技术分析师 | A/B/C/D/F | 是否匹配交易日 | 列出缺失的必采项 | 简要说明 |
-| 情绪分析师 | ... | ... | ... | ... |
-| 新闻分析师 | ... | ... | ... | ... |
-| 基本面分析师 | ... | ... | ... | ... |
-| 政策分析师 | ... | ... | ... | ... |
-| 游资追踪师 | ... | ... | ... | ... |
-| 解禁监控师 | ... | ... | ... | ... |
+{review_rows}
 
 **整体评级**: A/B/C/D/F
 **数据可信度**: 高/中/低
@@ -165,13 +169,20 @@ def create_quality_gate(llm):
     def quality_gate_node(state) -> dict:
         trade_date = state["trade_date"]
         ticker = state["company_of_interest"]
+        selected_analysts = [
+            analyst for analyst in state.get("selected_analysts", REPORT_FIELDS)
+            if analyst in REPORT_FIELDS
+        ] or list(REPORT_FIELDS)
+        analysis_mode = state.get("analysis_mode", "full")
 
         reports = {}
-        for analyst_type, field in REPORT_FIELDS.items():
+        for analyst_type in selected_analysts:
+            field = REPORT_FIELDS[analyst_type]
             reports[field] = state.get(field, "")
 
         hard_results = {}
-        for analyst_type, field in REPORT_FIELDS.items():
+        for analyst_type in selected_analysts:
+            field = REPORT_FIELDS[analyst_type]
             grade, detail = _hard_check_report(analyst_type, reports[field])
             hard_results[analyst_type] = (grade, detail)
 
@@ -184,6 +195,16 @@ def create_quality_gate(llm):
         tool_summary = summarize_tool_ledger(state.get("tool_execution_ledger", []))
         tool_ledger_text = format_tool_ledger_summary(tool_summary)
         data_quality_constraints = format_claim_constraints(tool_summary)
+        omitted_analysts = [
+            ANALYST_NAMES[analyst]
+            for analyst in REPORT_FIELDS
+            if analyst not in selected_analysts
+        ]
+        if omitted_analysts:
+            data_quality_constraints += (
+                "\n- 本次未运行" + "、".join(omitted_analysts) + "；"
+                "不得声称已全面核验这些领域，也不得把未覆盖误写为没有风险。"
+            )
 
         fail_count = sum(
             1 for _, (g, _) in hard_results.items() if g in ("F", "D")
@@ -193,7 +214,12 @@ def create_quality_gate(llm):
         if fail_count < 4:
             try:
                 review_prompt = _build_review_prompt(
-                    reports, hard_results, trade_date, ticker, tool_ledger_text
+                    reports,
+                    hard_results,
+                    trade_date,
+                    ticker,
+                    tool_ledger_text,
+                    selected_analysts,
                 )
                 response = llm.invoke(review_prompt)
                 llm_review = response.content
@@ -213,9 +239,17 @@ def create_quality_gate(llm):
                 "仍可综合成功数据，但不得使用缺失领域作为结论依据。\n"
             )
 
+        if analysis_mode == "fast":
+            scope_label = "快速分析（技术、新闻、基本面）"
+        elif len(selected_analysts) == len(REPORT_FIELDS):
+            scope_label = "完整分析（七个研究角度）"
+        else:
+            scope_label = f"自选分析（{len(selected_analysts)} 个研究角度）"
+
         summary = (
             f"## 数据质量门控结果\n\n"
             f"**标的**: {ticker} | **交易日**: {trade_date}\n\n"
+            f"**分析范围**: {scope_label}\n\n"
             f"> 硬检查为代码层客观事实清单（长度/表格/失败标记/缺失项计数），"
             f"LLM 复审为最终评级（综合缺失项是否必采关键）。v0.2.22 起硬检查不再"
             f"机械因 `[数据缺失]` 数量判 C，两层标准统一由 LLM 复审收口。\n\n"

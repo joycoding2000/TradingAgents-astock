@@ -46,6 +46,57 @@ _ANALYST_SECTIONS = [
     ("lockup_report", "🔒 解禁/减持"),
 ]
 
+_STAGE_LABELS = {
+    "market": "技术分析",
+    "social": "情绪分析",
+    "news": "新闻分析",
+    "fundamentals": "基本面分析",
+    "policy": "政策分析",
+    "hot_money": "资金与游资分析",
+    "lockup": "解禁监控",
+    "quality_gate": "数据质量检查",
+    "debate": "多空研究与汇总",
+    "trader": "交易方案整理",
+    "risk": "风险讨论",
+    "pm": "最终结论",
+}
+
+
+def _format_duration(milliseconds: int) -> str:
+    seconds = max(0, int(milliseconds)) / 1000
+    if seconds < 60:
+        return f"{seconds:.1f} 秒"
+    minutes, remainder = divmod(round(seconds), 60)
+    return f"{minutes} 分 {remainder:02d} 秒"
+
+
+def _render_performance(final_state: dict[str, Any]) -> None:
+    summary = final_state.get("performance_summary")
+    if not isinstance(summary, dict) or not summary:
+        return
+
+    with st.expander("⏱️ 查看本次分析耗时", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("总耗时", _format_duration(summary.get("wall_duration_ms", 0)))
+        col2.metric("模型调用", f"{summary.get('model_call_count', 0)} 次")
+        col3.metric("复用数据", f"{summary.get('cache_hit_count', 0)} 次")
+
+        stages = summary.get("stage_duration_ms", {})
+        if isinstance(stages, dict) and stages:
+            rows = [
+                {
+                    "阶段": _STAGE_LABELS.get(stage, "其他阶段"),
+                    "耗时": _format_duration(duration),
+                }
+                for stage, duration in stages.items()
+                if stage in _STAGE_LABELS
+            ]
+            if rows:
+                st.table(rows)
+        st.caption(
+            "多个分析角度会同时运行，各阶段耗时可能重叠，因此不能直接相加为总耗时。"
+        )
+
 
 def _safe_filename_label(label: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", label).strip("_")
@@ -69,6 +120,12 @@ def render_report(
     signal = display_signal(final_state, signal)
     color, cn_signal = _signal_style(signal)
     ticker_label = stock_display_label(ticker, final_state)
+
+    if elapsed is None:
+        saved_elapsed = final_state.get("performance_summary", {}).get(
+            "wall_duration_ms", 0
+        )
+        elapsed = saved_elapsed / 1000 if saved_elapsed else None
 
     stats_html = ""
     if elapsed is not None:
@@ -99,6 +156,12 @@ def render_report(
     )
 
     st.caption("⚠️ 本报告由 AI 自动生成，仅供学习研究，不构成投资建议。")
+
+    if final_state.get("analysis_mode") == "fast":
+        st.info(
+            "本次使用快速分析，只覆盖技术、新闻和基本面；没有运行市场情绪、"
+            "政策、游资和解禁监控，结论仅供初步参考。"
+        )
 
     if final_state.get("data_quality_status") == "中":
         st.warning(
@@ -141,6 +204,8 @@ def render_report(
             )
 
     st.markdown("---")
+
+    _render_performance(final_state)
 
     if is_data_limited(final_state):
         st.warning(DATA_INCOMPLETE_NOTICE)
