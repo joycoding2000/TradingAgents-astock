@@ -55,7 +55,10 @@ def timed_node(
 ) -> Callable[..., dict[str, Any]]:
     """Wrap a graph node and append one additive performance-ledger record."""
     parameters = inspect.signature(node).parameters
-    accepts_config = "config" in parameters or len(parameters) >= 2
+    # Some agent nodes have a second optional parameter such as ``name`` for
+    # structured-output logging. Only an explicitly named ``config`` parameter
+    # is a LangGraph runtime config slot.
+    accepts_config = "config" in parameters
 
     @wraps(node)
     def invoke(state: dict[str, Any], config: Any = None) -> dict[str, Any]:

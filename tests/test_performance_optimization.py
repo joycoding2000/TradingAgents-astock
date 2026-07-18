@@ -17,6 +17,7 @@ from tradingagents.agents.quality_ledger import (
     create_tracked_tool_node,
 )
 from tradingagents.graph.performance import summarize_performance_ledger
+from tradingagents.graph.performance import timed_node
 
 
 def _tool_state(name: str, call_id: str, **args):
@@ -129,6 +130,20 @@ def test_performance_summary_exposes_p50_p95_and_cache_hits():
     assert summary["tool_p95_duration_ms"] == 20
     assert summary["cache_hit_count"] == 1
     assert summary["stage_duration_ms"] == {"market": 400}
+
+
+def test_timed_node_does_not_treat_optional_name_as_runtime_config():
+    received = []
+
+    def trader_node(state, name="Trader"):
+        received.append(name)
+        return {"value": state["value"] + 1}
+
+    wrapped = timed_node("Trader", trader_node, stage="trader")
+    result = wrapped({"value": 1}, {"recursion_limit": 100})
+
+    assert received == ["Trader"]
+    assert result["value"] == 2
 
 
 def test_fast_quality_gate_reviews_only_enabled_reports():
