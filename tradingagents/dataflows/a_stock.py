@@ -329,7 +329,12 @@ if _em_proxy:
     _EM_SESSION.proxies = {"http": _em_proxy, "https": _em_proxy}
 _em_dynamic_proxy = [""]
 _em_proxy_last_refresh = [0.0]
+_em_proxy_last_attempt = [0.0]
 _em_proxy_lock = threading.Lock()
+# 巨量按量代理有效期为 3 分钟。提前 10 秒换新，避免刚好到期的代理进入请求链路。
+_EM_PROXY_TTL_SECONDS = max(
+    1.0, float(os.environ.get("EM_PROXY_TTL_SECONDS", "170"))
+)
 _EM_PROXY_REFRESH_MIN_INTERVAL = max(
     0.0, float(os.environ.get("EM_PROXY_REFRESH_MIN_INTERVAL", "5"))
 )
@@ -396,17 +401,16 @@ def _refresh_em_dynamic_proxy(force: bool = False) -> bool:
         if (
             not force
             and _em_dynamic_proxy[0]
-            and now - _em_proxy_last_refresh[0] < _EM_PROXY_REFRESH_MIN_INTERVAL
+            and now - _em_proxy_last_refresh[0] < _EM_PROXY_TTL_SECONDS
         ):
             return True
-        # 即使接口失败，也限速尝试，避免每个分析节点都打爆代理供应商接口。
+        # 取代理失败时限速尝试，避免每个分析节点都打爆代理供应商接口或反复扣费。
         if (
             not force
-            and not _em_dynamic_proxy[0]
-            and now - _em_proxy_last_refresh[0] < _EM_PROXY_REFRESH_MIN_INTERVAL
+            and now - _em_proxy_last_attempt[0] < _EM_PROXY_REFRESH_MIN_INTERVAL
         ):
             return False
-        _em_proxy_last_refresh[0] = now
+        _em_proxy_last_attempt[0] = now
         try:
             response = _requests.get(_juliangip_api_url, timeout=10)
             response.raise_for_status()
@@ -418,6 +422,7 @@ def _refresh_em_dynamic_proxy(force: bool = False) -> bool:
 
         _EM_SESSION.proxies = {"http": proxy_url, "https": proxy_url}
         _em_dynamic_proxy[0] = proxy_url
+        _em_proxy_last_refresh[0] = now
         logger.info("东财动态代理已刷新")
         return True
 

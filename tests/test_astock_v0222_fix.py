@@ -72,6 +72,41 @@ def test_juliangip_dynamic_proxy_is_fetched_and_cached(monkeypatch):
         importlib.reload(a_stock)
 
 
+def test_juliangip_dynamic_proxy_reuses_ip_until_ttl(monkeypatch):
+    """按量代理在有效期内复用，到期前后才再次提取，避免每次东财请求扣费。"""
+    from tradingagents.dataflows import a_stock
+
+    monkeypatch.delenv("EM_HTTP_PROXY", raising=False)
+    monkeypatch.setenv("JULIANGIP_API_URL", "http://proxy-api.invalid/signed")
+    monkeypatch.setenv("EM_PROXY_TTL_SECONDS", "170")
+    importlib.reload(a_stock)
+    now = [1_000.0]
+    calls = {"count": 0}
+
+    def fake_get(*args, **kwargs):
+        calls["count"] += 1
+        # json2 的真实返回项是包含 ip / port 的对象。
+        return _ProxyResponse({
+            "code": 200,
+            "data": {"proxy_list": [{"ip": "1.2.3.4", "port": "8080"}]},
+        })
+
+    monkeypatch.setattr(a_stock.time, "time", lambda: now[0])
+    monkeypatch.setattr(a_stock._requests, "get", fake_get)
+    try:
+        assert a_stock._refresh_em_dynamic_proxy() is True
+        now[0] += 169
+        assert a_stock._refresh_em_dynamic_proxy() is True
+        assert calls["count"] == 1
+        now[0] += 1
+        assert a_stock._refresh_em_dynamic_proxy() is True
+        assert calls["count"] == 2
+    finally:
+        monkeypatch.delenv("JULIANGIP_API_URL", raising=False)
+        monkeypatch.delenv("EM_PROXY_TTL_SECONDS", raising=False)
+        importlib.reload(a_stock)
+
+
 def test_static_proxy_takes_priority_over_juliangip(monkeypatch):
     """配置静态 EM_HTTP_PROXY 时，绝不请求或覆盖动态代理。"""
     from tradingagents.dataflows import a_stock
