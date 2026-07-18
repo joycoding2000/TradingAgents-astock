@@ -65,7 +65,7 @@ def test_plain_conclusion_translates_labels_ratings_and_jargon():
 
 
 def test_plain_conclusion_explains_common_a_share_terms_from_live_output():
-    text = "五十日均线、毛利率、现金流、高开低走、缩量回踩后企稳，不要满仓。"
+    text = "五十日均线、毛利率、现金流、高开低走、缩量回踩后企稳，T+1规则下不要满仓，市盈率偏低。"
 
     result = make_conclusion_plain(text)
 
@@ -76,4 +76,6 @@ def test_plain_conclusion_explains_common_a_share_terms_from_live_output():
     assert "成交量变小" in result
     assert "价格回落再试探" in result
     assert "不再继续下跌并站稳" in result
+    assert "当天买入、下个交易日才能卖出规则" in result
     assert "把大部分钱都投进去" in result
+    assert "股价和公司赚钱能力的比值" in result

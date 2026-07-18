@@ -33,7 +33,9 @@ _REPLACEMENTS = (
     (r"\bMACD\b", "价格走势指标"),
     (r"\bRSI\b", "涨跌是否过头的指标"),
     (r"\bKDJ\b", "短期涨跌快慢指标"),
-    (r"\bT\+1\b", "当天买入、下个交易日才能卖出"),
+    # Do not use a word boundary here: Chinese text immediately following
+    # ``T+1`` is also a Unicode word character, e.g. ``T+1规则``.
+    (r"T\+1", "当天买入、下个交易日才能卖出"),
     (r"(?i)stop[- ]?loss", "亏损控制价"),
     (r"(?i)position sizing", "投入资金比例"),
     (r"(?i)capital flow", "资金流向"),
@@ -46,6 +48,8 @@ _PLAIN_CN = (
     ("仓位", "投入资金比例"),
     ("回撤", "价格从高点下跌"),
     ("估值", "股价贵不贵"),
+    ("市盈率", "股价和公司赚钱能力的比值"),
+    ("市净率", "股价和公司净资产的比值"),
     ("基本面", "公司经营和赚钱情况"),
     ("毛利率", "卖货后能留下的钱占比"),
     ("现金流", "公司手头现金进出情况"),
@@ -68,8 +72,8 @@ _PLAIN_CN = (
 def make_conclusion_plain(text: Any) -> str:
     """Translate fixed labels and common jargon without changing the facts."""
     result = str(text or "")
-    for pattern, replacement in _REPLACEMENTS:
-        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     for term, replacement in _PLAIN_CN:
         result = result.replace(term, replacement)
+    for pattern, replacement in _REPLACEMENTS:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     return result
