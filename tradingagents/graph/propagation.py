@@ -57,6 +57,7 @@ class Propagator:
             "lockup_report": "",
             "data_quality_summary": "",
             "data_quality_status": "",
+            "data_quality_constraints": "",
             "tool_execution_ledger": [],
         }
 

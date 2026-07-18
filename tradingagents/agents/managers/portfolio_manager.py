@@ -31,6 +31,7 @@ def create_portfolio_manager(llm):
         risk_debate_state = state["risk_debate_state"]
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         past_context = state.get("past_context", "")
         lessons_line = (
@@ -66,12 +67,18 @@ def create_portfolio_manager(llm):
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
 {lessons_line}
+**Binding Data Boundaries:**
+{data_quality_constraints}
+
 **Risk Analysts Debate History:**
 {history}
 
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
+Be decisive and ground every conclusion in specific evidence from the analysts. The
+binding data boundaries override unsupported claims in every earlier stage. A
+medium-confidence result may retain a directional rating, but must disclose missing
+evidence and cannot cite it as a reason.{get_language_instruction()}"""
 
         final_trade_decision = invoke_structured_or_freetext(
             structured_llm,

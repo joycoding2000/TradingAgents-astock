@@ -45,3 +45,19 @@ def test_normal_markdown_uses_chinese_five_tier_signal(monkeypatch):
     monkeypatch.setattr("web.pdf_export.stock_display_label", lambda ticker, state: ticker)
     markdown = generate_markdown({}, "600879", "2026-07-18", "Underweight")
     assert "交易信号**：**偏向卖出" in markdown
+
+
+def test_medium_quality_keeps_conclusion_and_exports_scope_limits(monkeypatch):
+    monkeypatch.setattr("web.pdf_export.stock_display_label", lambda ticker, state: ticker)
+    monkeypatch.setattr("web.pdf_export.normalize_stock_mentions", lambda text, ticker, state: text)
+    state = {
+        "data_quality_status": "中",
+        "data_quality_constraints": "不能判断主力资金流入或流出。",
+        "final_trade_decision": "**Rating**: Hold\n结合现有数据暂时持有。",
+    }
+
+    markdown = generate_markdown(state, "600879", "2026-07-17", "Hold")
+
+    assert "交易信号**：**持有" in markdown
+    assert "结合现有数据暂时持有" in markdown
+    assert "不能判断主力资金流入或流出" in markdown

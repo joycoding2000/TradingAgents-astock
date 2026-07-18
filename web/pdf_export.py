@@ -581,6 +581,11 @@ def _collect_sections(
             sections.append(("数据质量", make_conclusion_plain(text)))
         return sections
 
+    if final_state.get("data_quality_status") == "中":
+        constraints = final_state.get("data_quality_constraints", "")
+        if constraints:
+            sections.append(("数据完整性说明", make_conclusion_plain(constraints)))
+
     for key, title in _REPORT_SECTIONS:
         content = final_state.get(key, "")
         if content:

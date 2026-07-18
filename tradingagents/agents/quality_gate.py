@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from tradingagents.agents.quality_ledger import (
+    format_claim_constraints,
     format_tool_ledger_summary,
     summarize_tool_ledger,
 )
@@ -139,7 +140,7 @@ def _build_review_prompt(
 
 评级标准：
 - A: 必采清单全部覆盖，数据时效匹配，有汇总表格。非必采的"特殊风险"项缺失（如股权质押/关联交易等系统未提供接口的项）不影响 A 级
-- B: 缺少 1-2 项非关键数据，整体可用
+- B: 缺少少量分项数据，整体仍可用，但必须限制对应领域结论
 - C: 缺少 3+ 项**必采关键**数据或有数据时效问题，需谨慎使用
 - D: 大量缺失或主要为失败信息，可信度低
 - F: 报告为空或完全无效
@@ -147,7 +148,9 @@ def _build_review_prompt(
 重要：硬检查已列出各分析师的客观缺失清单。请判断每处缺失是否属于**必采关键项**：
 - 若缺失的是非必采项（系统未提供接口的特殊风险项、或正常空结果如"近30日未上龙虎榜"），不应据此降级
 - 若你的评级与硬检查 grade 不一致，需在备注说明理由
-- 若台账列出“关键数据失败”，整体数据可信度不得评为“高”；结论只能作为有限参考，必须提示数据不全
+- 若台账列出“基础数据失败”，整体数据可信度必须为“低”
+- 若台账列出“分项数据缺失”，整体数据可信度不得为“高”；不得使用缺失领域作为结论依据
+- 资金流向或行业对比单独/同时失败，不代表其他成功数据失效；通常应判“中”而非“低”
 """
 
 
@@ -180,6 +183,7 @@ def create_quality_gate(llm):
 
         tool_summary = summarize_tool_ledger(state.get("tool_execution_ledger", []))
         tool_ledger_text = format_tool_ledger_summary(tool_summary)
+        data_quality_constraints = format_claim_constraints(tool_summary)
 
         fail_count = sum(
             1 for _, (g, _) in hard_results.items() if g in ("F", "D")
@@ -200,13 +204,13 @@ def create_quality_gate(llm):
         confidence_constraint = ""
         if confidence == "低":
             confidence_constraint = (
-                "\n> **代码层限制：关键数据接口失败或未调用任何数据工具。**"
+                "\n> **代码层限制：基础行情失败、多个主要领域不可用，或未调用数据工具。**"
                 "本次结论可信度已被限制为“低”，不得据此直接买卖。\n"
             )
         elif confidence == "中":
             confidence_constraint = (
-                "\n> **代码层提示：存在非关键数据失败或工具输入无效。**"
-                "结论可信度上限为“中”，请结合其他信息判断。\n"
+                "\n> **代码层提示：存在分项数据缺失、单个主要领域不可用或工具输入无效。**"
+                "仍可综合成功数据，但不得使用缺失领域作为结论依据。\n"
             )
 
         summary = (
@@ -216,6 +220,7 @@ def create_quality_gate(llm):
             f"LLM 复审为最终评级（综合缺失项是否必采关键）。v0.2.22 起硬检查不再"
             f"机械因 `[数据缺失]` 数量判 C，两层标准统一由 LLM 复审收口。\n\n"
             f"{tool_ledger_text}\n"
+            f"\n### 下游结论硬约束\n{data_quality_constraints}\n"
             f"{confidence_constraint}\n"
             f"### 硬检查结果\n{hard_summary}\n\n"
             f"### LLM 复审（最终评级）\n"
@@ -225,6 +230,7 @@ def create_quality_gate(llm):
         return {
             "data_quality_summary": summary,
             "data_quality_status": confidence,
+            "data_quality_constraints": data_quality_constraints,
         }
 
     return quality_gate_node

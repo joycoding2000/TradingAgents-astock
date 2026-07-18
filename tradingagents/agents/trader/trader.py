@@ -21,6 +21,7 @@ def create_trader(llm):
         company_name = state["company_of_interest"]
         instrument_context = build_instrument_context(company_name)
         investment_plan = state["investment_plan"]
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         # Collect A-stock specific analyst reports
         policy_report = state.get("policy_report", "")
@@ -61,8 +62,10 @@ def create_trader(llm):
                     f"specialists), here is an investment plan for {company_name}.\n\n"
                     f"{instrument_context}\n\n"
                     f"Proposed Investment Plan:\n{investment_plan}\n\n"
+                    f"Binding Data Boundaries:\n{data_quality_constraints}\n\n"
                     + (f"Additional A-Stock Analyst Context:\n{astock_context}\n\n" if astock_context else "")
-                    + "Leverage these insights to craft a precise transaction proposal."
+                    + "Respect the data boundaries even if an earlier report contradicts them. "
+                    + "For medium confidence, disclose the missing evidence and do not use it to justify the proposal."
                     + get_language_instruction()
                 ),
             },

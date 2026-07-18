@@ -455,7 +455,7 @@ class TradingAgentsGraph:
 
     @staticmethod
     def _apply_data_quality_limit(final_state) -> None:
-        """在关键数据失败时，用代码而非 LLM 自觉性限制最终结论可信度。"""
+        """在基础数据失败或多个主要领域不可用时限制最终结论。"""
         if final_state.get("data_quality_status") != "低":
             return
         notice = "⚠️ 数据不全：关键数据没有取到。本次分析只能作参考，不要据此直接买卖。"
@@ -508,6 +508,9 @@ class TradingAgentsGraph:
             "lockup_report": final_state.get("lockup_report", ""),
             "data_quality_summary": final_state.get("data_quality_summary", ""),
             "data_quality_status": final_state.get("data_quality_status", ""),
+            "data_quality_constraints": final_state.get(
+                "data_quality_constraints", ""
+            ),
             "tool_execution_ledger": final_state.get("tool_execution_ledger", []),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],

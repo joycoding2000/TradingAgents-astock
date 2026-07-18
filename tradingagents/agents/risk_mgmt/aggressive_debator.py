@@ -16,6 +16,7 @@ def create_aggressive_debator(llm):
         policy_report = state.get("policy_report", "")
         hot_money_report = state.get("hot_money_report", "")
         lockup_report = state.get("lockup_report", "")
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         trader_decision = state["trader_investment_plan"]
 
@@ -42,9 +43,10 @@ Company Fundamentals Report: {fundamentals_report}
 Policy Analysis Report: {policy_report}
 Hot Money / Capital Flow Report: {hot_money_report}
 Lockup Expiry / Insider Reduction Report: {lockup_report}
+Binding Data Boundaries: {data_quality_constraints}
 Conversation history: {history} Last conservative argument: {current_conservative_response} Last neutral argument: {current_neutral_response}. If no responses yet, present your own argument.
 
-Engage actively, debate persuasively, and assert why aggressive positioning is optimal for this A-share opportunity. Output conversationally without special formatting."""
+The binding data boundaries are mandatory. Do not manufacture a bullish signal for a missing data field. Engage actively using only available evidence. Output conversationally without special formatting."""
 
         response = llm.invoke(prompt)
 

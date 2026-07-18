@@ -15,6 +15,7 @@ def create_bear_researcher(llm):
         hot_money_report = state.get("hot_money_report", "")
         lockup_report = state.get("lockup_report", "")
         data_quality_summary = state.get("data_quality_summary", "")
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         prompt = f"""You are a Bear Analyst making the case against investing in this A-share (China mainland) stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators unique to the Chinese market. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
 
@@ -42,10 +43,11 @@ Policy analysis report: {policy_report}
 Hot money / capital flow report: {hot_money_report}
 Lockup expiry / insider reduction report: {lockup_report}
 Data quality assessment: {data_quality_summary}
+Binding evidence restrictions: {data_quality_constraints}
 Conversation history of the debate: {history}
 Last bull argument: {current_response}
 
-⚠️ If the data quality assessment flags any report as low-confidence (grade C/D/F), reduce your reliance on that report and note the data limitation in your argument.
+⚠️ The binding evidence restrictions are mandatory. Never infer a missing direct data point from news, market stereotypes, or another indirect source.
 
 Deliver a compelling bear argument grounded in A-share market realities. Refute the bull's claims and demonstrate the risks of investing in this stock within the Chinese regulatory and market structure.
 """

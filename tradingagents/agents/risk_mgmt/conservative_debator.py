@@ -16,6 +16,7 @@ def create_conservative_debator(llm):
         policy_report = state.get("policy_report", "")
         hot_money_report = state.get("hot_money_report", "")
         lockup_report = state.get("lockup_report", "")
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         trader_decision = state["trader_investment_plan"]
 
@@ -43,9 +44,10 @@ Company Fundamentals Report: {fundamentals_report}
 Policy Analysis Report: {policy_report}
 Hot Money / Capital Flow Report: {hot_money_report}
 Lockup Expiry / Insider Reduction Report: {lockup_report}
+Binding Data Boundaries: {data_quality_constraints}
 Conversation history: {history} Last aggressive argument: {current_aggressive_response} Last neutral argument: {current_neutral_response}. If no responses yet, present your own argument.
 
-Demonstrate why a conservative stance is the safest path, especially given A-share market structure where downside protection mechanisms (stop-loss, same-day exit) are severely limited. Output conversationally without special formatting."""
+The binding data boundaries are mandatory. Missing data is uncertainty, not proof of a negative event. Demonstrate a conservative stance using only available evidence. Output conversationally without special formatting."""
 
         response = llm.invoke(prompt)
 

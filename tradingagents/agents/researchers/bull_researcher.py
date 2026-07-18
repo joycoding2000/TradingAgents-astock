@@ -15,6 +15,7 @@ def create_bull_researcher(llm):
         hot_money_report = state.get("hot_money_report", "")
         lockup_report = state.get("lockup_report", "")
         data_quality_summary = state.get("data_quality_summary", "")
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         prompt = f"""You are a Bull Analyst advocating for investing in this A-share (China mainland) stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
 
@@ -41,10 +42,11 @@ Policy analysis report: {policy_report}
 Hot money / capital flow report: {hot_money_report}
 Lockup expiry / insider reduction report: {lockup_report}
 Data quality assessment: {data_quality_summary}
+Binding evidence restrictions: {data_quality_constraints}
 Conversation history of the debate: {history}
 Last bear argument: {current_response}
 
-⚠️ If the data quality assessment flags any report as low-confidence (grade C/D/F), reduce your reliance on that report and note the data limitation in your argument.
+⚠️ The binding evidence restrictions are mandatory. Never infer a missing direct data point from news, market stereotypes, or another indirect source.
 
 Deliver a compelling bull argument that integrates A-share market dynamics. Refute the bear's concerns and demonstrate why the bull position holds stronger merit in the Chinese market context.
 """

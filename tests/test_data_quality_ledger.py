@@ -40,7 +40,8 @@ def test_tool_ledger_classifies_success_normal_empty_and_failure():
     ]
     assert all("content" not in entry for entry in ledger)
     assert all(len(entry["request_key"]) == 16 for entry in ledger)
-    assert ledger[2]["critical"] is True
+    assert ledger[2]["critical"] is False
+    assert ledger[2]["impact"] == "分项"
 
 
 def test_tracked_tool_node_records_real_toolnode_output():
@@ -89,14 +90,14 @@ def test_ledger_latest_success_overrides_a_retried_failure():
     assert summary["failed_critical"] == []
 
 
-def test_ledger_different_requests_do_not_hide_a_critical_failure():
+def test_ledger_different_requests_keep_partial_failure_as_medium():
     summary = summarize_tool_ledger([
         {"tool_name": "get_news", "status": STATUS_FAILED, "critical": True, "request_key": "news-a"},
         {"tool_name": "get_news", "status": STATUS_SUCCESS, "critical": True, "request_key": "news-b"},
     ])
 
-    assert summary["confidence"] == "低"
-    assert summary["failed_critical"] == ["get_news"]
+    assert summary["confidence"] == "中"
+    assert summary["failed_scoped"] == ["get_news"]
 
 
 def test_ledger_critical_failure_caps_confidence_and_is_auditable():
@@ -109,7 +110,41 @@ def test_ledger_critical_failure_caps_confidence_and_is_auditable():
 
     assert summary["confidence"] == "低"
     assert summary["failed_critical"] == ["get_stock_data"]
-    assert "股价和成交量 | 失败 | 关键" in text
+    assert "股价和成交量 | 失败 | 基础" in text
+
+
+def test_fund_flow_and_industry_failures_limit_scopes_without_blocking_report():
+    summary = summarize_tool_ledger([
+        {"tool_name": "get_stock_data", "status": STATUS_SUCCESS},
+        {"tool_name": "get_indicators", "status": STATUS_SUCCESS},
+        {"tool_name": "get_fundamentals", "status": STATUS_SUCCESS},
+        {"tool_name": "get_news", "status": STATUS_SUCCESS},
+        {"tool_name": "get_fund_flow", "status": STATUS_FAILED},
+        {"tool_name": "get_industry_comparison", "status": STATUS_FAILED},
+    ])
+
+    assert summary["confidence"] == "中"
+    assert summary["failed_blocking"] == []
+    assert summary["failed_scoped"] == [
+        "get_fund_flow", "get_industry_comparison"
+    ]
+    assert "不能判断主力资金流入、流出、抢筹或出逃" in summary["claim_constraints"]
+    assert "不能判断行业排名、行业强弱和板块轮动" in summary["claim_constraints"]
+
+
+def test_two_unavailable_major_domains_cap_report_at_low_confidence():
+    summary = summarize_tool_ledger([
+        {"tool_name": "get_stock_data", "status": STATUS_SUCCESS},
+        {"tool_name": "get_fundamentals", "status": STATUS_FAILED},
+        {"tool_name": "get_balance_sheet", "status": STATUS_FAILED},
+        {"tool_name": "get_cashflow", "status": STATUS_FAILED},
+        {"tool_name": "get_income_statement", "status": STATUS_FAILED},
+        {"tool_name": "get_news", "status": STATUS_FAILED},
+        {"tool_name": "get_global_news", "status": STATUS_FAILED},
+    ])
+
+    assert summary["confidence"] == "低"
+    assert summary["unavailable_core_domains"] == ["公司经营", "新闻与政策"]
 
 
 def test_quality_gate_uses_ledger_as_code_enforced_low_confidence_cap():
@@ -117,7 +152,7 @@ def test_quality_gate_uses_ledger_as_code_enforced_low_confidence_cap():
 
     class _LLM:
         def invoke(self, prompt):
-            assert "关键数据失败" in prompt
+            assert "基础数据失败" in prompt
             return type("Response", (), {"content": "LLM 误判为高可信度"})()
 
     report = "| 指标 | 值 |\n|---|---|\n| 示例 | 1 |\n" + "分析内容" * 80
@@ -133,8 +168,41 @@ def test_quality_gate_uses_ledger_as_code_enforced_low_confidence_cap():
     result = create_quality_gate(_LLM())(state)
 
     assert result["data_quality_status"] == "低"
-    assert "代码层限制：关键数据接口失败" in result["data_quality_summary"]
-    assert "股价和成交量 | 失败 | 关键" in result["data_quality_summary"]
+    assert "代码层限制：基础行情失败" in result["data_quality_summary"]
+    assert "股价和成交量 | 失败 | 基础" in result["data_quality_summary"]
+    assert "不得给出买入、卖出、具体价位或投入比例" in result["data_quality_constraints"]
+
+
+def test_quality_gate_keeps_partial_eastmoney_failures_at_medium():
+    from tradingagents.agents.quality_gate import REPORT_FIELDS, create_quality_gate
+
+    class _LLM:
+        def invoke(self, prompt):
+            assert "资金流向" in prompt
+            assert "所属行业情况" in prompt
+            return type("Response", (), {"content": "整体评级 B，分项数据受限"})()
+
+    report = "| 指标 | 值 |\n|---|---|\n| 示例 | 1 |\n" + "分析内容" * 80
+    state = {
+        "company_of_interest": "600879",
+        "trade_date": "2026-07-17",
+        **{field: report for field in REPORT_FIELDS.values()},
+        "tool_execution_ledger": [
+            {"tool_name": "get_stock_data", "status": STATUS_SUCCESS},
+            {"tool_name": "get_indicators", "status": STATUS_SUCCESS},
+            {"tool_name": "get_fundamentals", "status": STATUS_SUCCESS},
+            {"tool_name": "get_news", "status": STATUS_SUCCESS},
+            {"tool_name": "get_fund_flow", "status": STATUS_FAILED},
+            {"tool_name": "get_industry_comparison", "status": STATUS_FAILED},
+        ],
+    }
+
+    result = create_quality_gate(_LLM())(state)
+
+    assert result["data_quality_status"] == "中"
+    assert "不能判断主力资金流入、流出、抢筹或出逃" in result["data_quality_constraints"]
+    assert "不能判断行业排名、行业强弱和板块轮动" in result["data_quality_constraints"]
+    assert "可以综合其他已成功数据给出参考倾向" in result["data_quality_constraints"]
 
 
 def test_low_confidence_final_decision_gets_code_enforced_notice():
@@ -166,6 +234,7 @@ def test_log_state_persists_quality_summary_status_and_ledger(tmp_path):
         "lockup_report": "l",
         "data_quality_summary": "台账摘要",
         "data_quality_status": "低",
+        "data_quality_constraints": "不得判断主力资金",
         "tool_execution_ledger": [{"tool_name": "get_stock_data", "status": "failed"}],
         "investment_debate_state": {
             "bull_history": "", "bear_history": "", "history": "",
@@ -184,4 +253,5 @@ def test_log_state_persists_quality_summary_status_and_ledger(tmp_path):
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["data_quality_summary"] == "台账摘要"
     assert saved["data_quality_status"] == "低"
+    assert saved["data_quality_constraints"] == "不得判断主力资金"
     assert saved["tool_execution_ledger"][0]["status"] == "failed"

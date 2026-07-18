@@ -100,6 +100,16 @@ def render_report(
 
     st.caption("⚠️ 本报告由 AI 自动生成，仅供学习研究，不构成投资建议。")
 
+    if final_state.get("data_quality_status") == "中":
+        st.warning(
+            "部分数据没有取到，系统已忽略这些领域的相关判断；"
+            "其余成功数据仍参与综合分析。"
+        )
+        constraints = final_state.get("data_quality_constraints", "")
+        if constraints:
+            with st.expander("查看本次不能判断的内容", expanded=False):
+                st.markdown(_display_report_text(constraints, ticker, final_state))
+
     # Markdown export always works (no font dependency); PDF is generated
     # lazily and guarded so a PDF/font failure never crashes the results page.
     col_md, col_pdf, col_spacer = st.columns([1, 1, 2])

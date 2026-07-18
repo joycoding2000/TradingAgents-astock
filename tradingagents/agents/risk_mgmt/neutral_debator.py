@@ -16,6 +16,7 @@ def create_neutral_debator(llm):
         policy_report = state.get("policy_report", "")
         hot_money_report = state.get("hot_money_report", "")
         lockup_report = state.get("lockup_report", "")
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         trader_decision = state["trader_investment_plan"]
 
@@ -43,9 +44,10 @@ Company Fundamentals Report: {fundamentals_report}
 Policy Analysis Report: {policy_report}
 Hot Money / Capital Flow Report: {hot_money_report}
 Lockup Expiry / Insider Reduction Report: {lockup_report}
+Binding Data Boundaries: {data_quality_constraints}
 Conversation history: {history} Last aggressive argument: {current_aggressive_response} Last conservative argument: {current_conservative_response}. If no responses yet, present your own argument.
 
-Advocate for a balanced, position-sized approach that captures A-share upside while respecting the market's structural constraints. Output conversationally without special formatting."""
+The binding data boundaries are mandatory. Treat missing fields as unknown rather than positive or negative evidence. Advocate a balanced approach using only available evidence. Output conversationally without special formatting."""
 
         response = llm.invoke(prompt)
 

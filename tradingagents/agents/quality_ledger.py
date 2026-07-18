@@ -46,19 +46,41 @@ _TOOL_LABELS = {
     "get_global_news": "市场新闻",
 }
 
-# 这些工具提供价格、财务、新闻与资金等直接影响结论的基础数据。任何一个最终失败，都必须
-# 把结论可信度降为“低”；正常空结果（例如未上龙虎榜）不计为失败。
-CRITICAL_TOOLS = {
-    "get_stock_data",
-    "get_indicators",
-    "get_fundamentals",
-    "get_balance_sheet",
-    "get_cashflow",
-    "get_income_statement",
-    "get_news",
-    "get_fund_flow",
-    "get_industry_comparison",
-    "get_northbound_flow",
+# 只有行情价格是所有结论共同依赖的硬基础。其他接口失败时，应限制对应领域的结论，
+# 而不是一票否决整份综合报告。
+BLOCKING_TOOLS = {"get_stock_data"}
+
+# 两个主要研究领域同时完全不可用时，综合报告才降为低可信度。单个领域不可用、或某个
+# 补充接口失败，均降为中可信度并禁止使用相应论据。
+CORE_DOMAINS = {
+    "行情与技术": {"get_stock_data", "get_indicators"},
+    "公司经营": {
+        "get_fundamentals",
+        "get_balance_sheet",
+        "get_cashflow",
+        "get_income_statement",
+    },
+    "新闻与政策": {"get_news", "get_global_news"},
+}
+
+TOOL_CLAIM_CONSTRAINTS = {
+    "get_stock_data": "不能判断股价趋势、涨跌幅、成交量，也不能给出参考价位",
+    "get_indicators": "不能使用技术指标判断趋势、超买超卖或支撑压力",
+    "get_fundamentals": "不能判断公司综合估值和核心经营情况",
+    "get_balance_sheet": "不能判断资产负债结构和偿债能力",
+    "get_cashflow": "不能判断公司现金进出和盈利质量",
+    "get_income_statement": "不能判断收入、利润及其变化趋势",
+    "get_news": "不能断言公司近期存在或不存在特定消息、公告和舆情事件",
+    "get_global_news": "不能判断近期宏观和市场消息影响",
+    "get_fund_flow": "不能判断主力资金流入、流出、抢筹或出逃",
+    "get_industry_comparison": "不能判断行业排名、行业强弱和板块轮动",
+    "get_northbound_flow": "不能判断外资流入或流出",
+    "get_profit_forecast": "不能判断机构盈利预期和预测估值",
+    "get_hot_stocks": "不能判断是否属于当日热门股或热门题材",
+    "get_concept_blocks": "不能确认所属概念和板块",
+    "get_dragon_tiger_board": "不能判断龙虎榜席位和机构参与情况",
+    "get_lockup_expiry": "不能判断限售股解禁时间和规模",
+    "get_insider_transactions": "不能判断股东和公司管理人员的持股变化",
 }
 
 _NORMAL_EMPTY_MARKERS = (
@@ -145,7 +167,8 @@ def build_tool_ledger(
                 "tool_name": tool_name,
                 "analyst": analyst,
                 "status": status,
-                "critical": tool_name in CRITICAL_TOOLS,
+                "critical": tool_name in BLOCKING_TOOLS,
+                "impact": "基础" if tool_name in BLOCKING_TOOLS else "分项",
                 "tool_call_id": call_id,
                 "request_key": _request_key(call),
                 "recorded_at": recorded_at,
@@ -181,25 +204,45 @@ def summarize_tool_ledger(ledger: Iterable[dict[str, Any]]) -> dict[str, Any]:
         latest_by_request[request_key] = entry
 
     latest = list(latest_by_request.values())
-    failed_critical = sorted(
+    failed_blocking = sorted({
         entry["tool_name"]
         for entry in latest
-        if entry.get("critical") and entry.get("status") == STATUS_FAILED
-    )
-    failed_noncritical = sorted(
+        if entry.get("tool_name") in BLOCKING_TOOLS
+        and entry.get("status") == STATUS_FAILED
+    })
+    failed_scoped = sorted({
         entry["tool_name"]
         for entry in latest
-        if not entry.get("critical") and entry.get("status") == STATUS_FAILED
-    )
-    invalid_inputs = sorted(
+        if entry.get("tool_name") not in BLOCKING_TOOLS
+        and entry.get("status") == STATUS_FAILED
+    })
+    invalid_inputs = sorted({
         entry["tool_name"]
         for entry in latest
         if entry.get("status") == STATUS_INVALID_INPUT
-    )
+    })
 
-    if not entries or failed_critical:
+    usable_statuses = {STATUS_SUCCESS, STATUS_NORMAL_EMPTY}
+    unavailable_core_domains = []
+    for domain, tool_names in CORE_DOMAINS.items():
+        domain_entries = [
+            entry for entry in latest if entry.get("tool_name") in tool_names
+        ]
+        if domain_entries and not any(
+            entry.get("status") in usable_statuses for entry in domain_entries
+        ):
+            unavailable_core_domains.append(domain)
+
+    failed_tools = failed_blocking + failed_scoped
+    claim_constraints = [
+        TOOL_CLAIM_CONSTRAINTS[name]
+        for name in failed_tools
+        if name in TOOL_CLAIM_CONSTRAINTS
+    ]
+
+    if not entries or failed_blocking or len(unavailable_core_domains) >= 2:
         confidence = "低"
-    elif failed_noncritical or invalid_inputs:
+    elif failed_scoped or unavailable_core_domains or invalid_inputs:
         confidence = "中"
     else:
         confidence = "高"
@@ -209,8 +252,13 @@ def summarize_tool_ledger(ledger: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "attempt_count": len(entries),
         "latest": latest,
         "status_counts": dict(Counter(entry.get("status") for entry in latest)),
-        "failed_critical": failed_critical,
-        "failed_noncritical": failed_noncritical,
+        # 保留旧字段名，兼容已存在的调用方；语义已收窄为“全局基础失败”。
+        "failed_critical": failed_blocking,
+        "failed_noncritical": failed_scoped,
+        "failed_blocking": failed_blocking,
+        "failed_scoped": failed_scoped,
+        "unavailable_core_domains": unavailable_core_domains,
+        "claim_constraints": claim_constraints,
         "invalid_inputs": invalid_inputs,
     }
 
@@ -222,17 +270,22 @@ def format_tool_ledger_summary(summary: dict[str, Any]) -> str:
         "### 数据接口调用台账",
         f"- 调用次数：{summary['attempt_count']}；结论可信度上限：{confidence}",
     ]
-    if summary["failed_critical"]:
+    if summary["failed_blocking"]:
         lines.append(
-            "- 关键数据失败：" + "、".join(
-                _tool_label(name) for name in summary["failed_critical"]
+            "- 基础数据失败：" + "、".join(
+                _tool_label(name) for name in summary["failed_blocking"]
             )
         )
-    if summary["failed_noncritical"]:
+    if summary["failed_scoped"]:
         lines.append(
-            "- 非关键数据失败：" + "、".join(
-                _tool_label(name) for name in summary["failed_noncritical"]
+            "- 分项数据缺失：" + "、".join(
+                _tool_label(name) for name in summary["failed_scoped"]
             )
+        )
+    if summary["unavailable_core_domains"]:
+        lines.append(
+            "- 完全不可用的主要领域："
+            + "、".join(summary["unavailable_core_domains"])
         )
     if summary["invalid_inputs"]:
         lines.append(
@@ -246,7 +299,27 @@ def format_tool_ledger_summary(summary: dict[str, Any]) -> str:
 
     lines.extend(["", "工具 | 最终状态 | 重要性", "--- | --- | ---"])
     for entry in sorted(summary["latest"], key=lambda item: item["tool_name"]):
-        importance = "关键" if entry.get("critical") else "一般"
+        importance = "基础" if entry.get("tool_name") in BLOCKING_TOOLS else "分项"
         status = _STATUS_LABELS.get(entry.get("status"), "未知")
         lines.append(f"{_tool_label(entry['tool_name'])} | {status} | {importance}")
+    if summary["claim_constraints"]:
+        lines.extend(["", "### 本次结论使用限制"])
+        lines.extend(f"- {item}。" for item in summary["claim_constraints"])
+    return "\n".join(lines)
+
+
+def format_claim_constraints(summary: dict[str, Any]) -> str:
+    """生成供所有下游决策节点执行的简短、确定性证据边界。"""
+    confidence = summary["confidence"]
+    lines = [f"数据可信度：{confidence}。以下限制是代码层硬约束："]
+    constraints = summary.get("claim_constraints", [])
+    if not constraints:
+        lines.append("- 当前没有因接口失败而新增的结论限制。")
+    else:
+        lines.extend(f"- {item}。" for item in constraints)
+    if confidence == "中":
+        lines.append("- 可以综合其他已成功数据给出参考倾向，但必须明确说明缺失项。")
+    elif confidence == "低":
+        lines.append("- 不得给出买入、卖出、具体价位或投入比例。")
+    lines.append("- 不得用新闻、常识或其他间接材料冒充缺失接口的直接证据。")
     return "\n".join(lines)

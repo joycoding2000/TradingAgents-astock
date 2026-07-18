@@ -16,6 +16,7 @@ def create_research_manager(llm):
     def research_manager_node(state) -> dict:
         instrument_context = build_instrument_context(state["company_of_interest"])
         history = state["investment_debate_state"].get("history", "")
+        data_quality_constraints = state.get("data_quality_constraints", "")
 
         investment_debate_state = state["investment_debate_state"]
 
@@ -39,7 +40,14 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 ---
 
 **Debate History:**
-{history}""" + get_language_instruction()
+{history}
+
+**Binding Data Boundaries:**
+{data_quality_constraints}
+
+These boundaries override any unsupported statement in the debate. A medium-confidence
+run may still receive a rating, but the plan must disclose missing fields and must not
+use them as evidence.""" + get_language_instruction()
 
         investment_plan = invoke_structured_or_freetext(
             structured_llm,
