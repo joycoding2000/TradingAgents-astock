@@ -26,6 +26,7 @@ import random
 import re as _re
 import socket
 import time
+import threading
 import uuid
 import urllib.request
 
@@ -319,14 +320,106 @@ _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 _EM_SESSION = _requests.Session()
 _EM_SESSION.headers.update({"User-Agent": _UA})
 # v0.2.22: 阿里云等 IDC IP 被东财 push2/push2his 封禁（建连后 RemoteDisconnected），
-# 资金流 fflow、行业对比 clist 等全失败。设 EM_HTTP_PROXY 环境变量让东财请求走代理
-# 出口绕过（国内住宅/移动 IP 最佳，IDC IP 可能也被封）。不设则直连，本地开发无影响。
+# 资金流 fflow、行业对比 clist 等全失败。静态 EM_HTTP_PROXY 优先；也可在服务器
+# 私有 .env 中设置 JULIANGIP_API_URL，按需从巨量 IP 获取一条代理。签名 URL 属于凭据，
+# 不得写入代码、文档或日志。
 _em_proxy = os.environ.get("EM_HTTP_PROXY", "").strip()
+_juliangip_api_url = os.environ.get("JULIANGIP_API_URL", "").strip()
 if _em_proxy:
     _EM_SESSION.proxies = {"http": _em_proxy, "https": _em_proxy}
+_em_dynamic_proxy = [""]
+_em_proxy_last_refresh = [0.0]
+_em_proxy_lock = threading.Lock()
+_EM_PROXY_REFRESH_MIN_INTERVAL = max(
+    0.0, float(os.environ.get("EM_PROXY_REFRESH_MIN_INTERVAL", "5"))
+)
 # 两次东财请求最小间隔(秒)；批量多 Agent 场景可设环境变量 EM_MIN_INTERVAL=1.5~2 降速。
 _EM_MIN_INTERVAL = float(os.environ.get("EM_MIN_INTERVAL", "1.0"))
 _em_last_call = [0.0]  # 模块级上次东财请求时间戳
+
+
+def _parse_juliangip_proxy(payload) -> str:
+    """从巨量 IP 的 JSON/JSON2 响应中提取首个 ``http://ip:port`` 代理。
+
+    仅接受 IPv4 地址与合法端口，避免把异常响应或错误页写入 requests 的代理配置。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("代理接口未返回 JSON 对象")
+
+    code = payload.get("code")
+    if code is not None and str(code) not in {"0", "200"}:
+        raise ValueError("代理接口返回非成功状态")
+
+    data = payload.get("data", {})
+    if isinstance(data, dict):
+        candidates = data.get("proxy_list", data.get("list", []))
+    elif isinstance(data, list):
+        candidates = data
+    else:
+        candidates = []
+
+    if isinstance(candidates, str):
+        candidates = [item for item in _re.split(r"[\s,]+", candidates) if item]
+    if not isinstance(candidates, list):
+        raise ValueError("代理接口未返回代理列表")
+
+    for item in candidates:
+        if isinstance(item, dict):
+            ip = item.get("ip") or item.get("host")
+            port = item.get("port")
+            item = f"{ip}:{port}" if ip and port else item.get("proxy", "")
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip().removeprefix("http://").removeprefix("https://")
+        host, separator, port = candidate.rpartition(":")
+        if not separator or not port.isdigit() or not 1 <= int(port) <= 65535:
+            continue
+        octets = host.split(".")
+        if len(octets) != 4 or any(
+            not octet.isdigit() or not 0 <= int(octet) <= 255 for octet in octets
+        ):
+            continue
+        return f"http://{host}:{port}"
+
+    raise ValueError("代理接口未返回合法 IPv4 代理")
+
+
+def _refresh_em_dynamic_proxy(force: bool = False) -> bool:
+    """按需刷新巨量 IP 代理；静态代理存在时绝不覆盖它。"""
+    if _em_proxy:
+        return True
+    if not _juliangip_api_url:
+        return False
+
+    with _em_proxy_lock:
+        now = time.time()
+        if (
+            not force
+            and _em_dynamic_proxy[0]
+            and now - _em_proxy_last_refresh[0] < _EM_PROXY_REFRESH_MIN_INTERVAL
+        ):
+            return True
+        # 即使接口失败，也限速尝试，避免每个分析节点都打爆代理供应商接口。
+        if (
+            not force
+            and not _em_dynamic_proxy[0]
+            and now - _em_proxy_last_refresh[0] < _EM_PROXY_REFRESH_MIN_INTERVAL
+        ):
+            return False
+        _em_proxy_last_refresh[0] = now
+        try:
+            response = _requests.get(_juliangip_api_url, timeout=10)
+            response.raise_for_status()
+            proxy_url = _parse_juliangip_proxy(response.json())
+        except (_requests.exceptions.RequestException, ValueError) as exc:
+            # requests 异常文本可能回显完整请求 URL；该 URL 含签名，日志中只留异常类型。
+            logger.warning("无法获取东财动态代理（%s）", type(exc).__name__)
+            return False
+
+        _EM_SESSION.proxies = {"http": proxy_url, "https": proxy_url}
+        _em_dynamic_proxy[0] = proxy_url
+        logger.info("东财动态代理已刷新")
+        return True
 
 
 def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
@@ -338,7 +431,13 @@ def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
     偶发重试：连接异常（RemoteDisconnected/Timeout/ConnectionError）或 5xx 响应时按指数
     退避重试最多 retries 次；4xx 直接返回（接口本身问题不重试，交给调用方处理）。
     """
+    # 已配置动态代理时，取代理失败不能悄悄从阿里云直连，否则 push2 的封禁会被伪装成
+    # 普通数据缺失。静态 EM_HTTP_PROXY 仍保持既有优先级。
+    if _juliangip_api_url and not _em_proxy and not _refresh_em_dynamic_proxy():
+        raise _requests.exceptions.ProxyError("东财动态代理不可用")
+
     last_exc = None
+    proxy_replaced = False
     for attempt in range(retries):
         wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
         if wait > 0:
@@ -355,6 +454,10 @@ def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
         except _requests.exceptions.RequestException as e:
             _em_last_call[0] = time.time()
             last_exc = e
+            # 短效代理失效或被目标站拒绝时，仅换一次代理后重试，避免三次重试消耗三条
+            # 按量 IP；不影响静态代理。
+            if _juliangip_api_url and not _em_proxy and not proxy_replaced:
+                proxy_replaced = _refresh_em_dynamic_proxy(force=True)
             if attempt < retries - 1:
                 time.sleep(0.5 * (2 ** attempt))
                 continue
