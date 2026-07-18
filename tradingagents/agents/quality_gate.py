@@ -24,6 +24,9 @@ MIN_REPORT_LENGTH = 200
 
 FAILURE_MARKERS = [
     "无法获取",
+    "获取失败",
+    "查询失败",
+    "Error fetching",
     "I cannot retrieve",
     "I don't have access",
     "unable to fetch",

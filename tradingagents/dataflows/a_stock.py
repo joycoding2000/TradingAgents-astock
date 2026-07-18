@@ -343,6 +343,10 @@ _EM_MIN_INTERVAL = float(os.environ.get("EM_MIN_INTERVAL", "1.0"))
 _em_last_call = [0.0]  # 模块级上次东财请求时间戳
 
 
+class _EastmoneyDataUnavailable(_requests.exceptions.RequestException):
+    """东财数据不可用的脱敏异常，不向分析报告泄露代理或网络实现细节。"""
+
+
 def _parse_juliangip_proxy(payload) -> str:
     """从巨量 IP 的 JSON/JSON2 响应中提取首个 ``http://ip:port`` 代理。
 
@@ -427,6 +431,12 @@ def _refresh_em_dynamic_proxy(force: bool = False) -> bool:
         return True
 
 
+def _eastmoney_data_missing(label: str, exc: Exception) -> str:
+    """记录内部失败原因，并返回供分析师识别的统一数据缺失标记。"""
+    logger.warning("东财%s未获取（%s）", label, type(exc).__name__)
+    return f"[数据缺失: {label}暂不可用]"
+
+
 def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
     """东财统一请求入口：自动节流 + 复用 session + 默认 UA + 偶发重试。
 
@@ -437,9 +447,10 @@ def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
     退避重试最多 retries 次；4xx 直接返回（接口本身问题不重试，交给调用方处理）。
     """
     # 已配置动态代理时，取代理失败不能悄悄从阿里云直连，否则 push2 的封禁会被伪装成
-    # 普通数据缺失。静态 EM_HTTP_PROXY 仍保持既有优先级。
+    # 普通数据缺失。错误细节只写日志；调用方据此返回 [数据缺失]。静态代理仍优先。
     if _juliangip_api_url and not _em_proxy and not _refresh_em_dynamic_proxy():
-        raise _requests.exceptions.ProxyError("东财动态代理不可用")
+        logger.warning("东财请求未执行：动态代理暂不可用")
+        raise _EastmoneyDataUnavailable("东财数据暂不可用")
 
     last_exc = None
     proxy_replaced = False
@@ -466,10 +477,11 @@ def _em_get(url, params=None, headers=None, timeout=15, retries=3, **kwargs):
             if attempt < retries - 1:
                 time.sleep(0.5 * (2 ** attempt))
                 continue
-            raise
+            logger.warning("东财请求失败（%s）", type(e).__name__)
+            raise _EastmoneyDataUnavailable("东财数据暂不可用") from None
     if last_exc:
         raise last_exc
-    raise RuntimeError("_em_get exhausted retries")
+    raise _EastmoneyDataUnavailable("东财数据暂不可用")
 
 
 def _eastmoney_datacenter(
@@ -1591,7 +1603,7 @@ def get_insider_transactions(
                 lines.append(f"  {name} | {hold} | {ratio} | {change} | {is_org}")
             sections.append("\n".join(lines))
     except Exception as e:
-        logger.warning("holders failed for %s: %s", code, e)
+        sections.append(_eastmoney_data_missing("十大股东数据", e))
 
     # --- 2. 股东户数变化（F10 ShareholderResearch gdrs） ---
     try:
@@ -1616,7 +1628,7 @@ def get_insider_transactions(
                 lines.append(f"  {d} | {num} | {ratio} | {avg} | {focus}")
             sections.append("\n".join(lines))
     except Exception as e:
-        logger.warning("gdrs failed for %s: %s", code, e)
+        sections.append(_eastmoney_data_missing("股东户数数据", e))
 
     # --- 3. 董监高持股变动（F10 CompanyManagement cgbd） ---
     try:
@@ -1643,7 +1655,7 @@ def get_insider_transactions(
                 lines.append(f"  {d} | {name} | {pos} | {chg} | {price} | {after} | {way}")
             sections.append("\n".join(lines))
     except Exception as e:
-        logger.warning("cgbd failed for %s: %s", code, e)
+        sections.append(_eastmoney_data_missing("董监高持股变动数据", e))
 
     if not sections:
         return f"No shareholder data found for A-stock '{code}'"
@@ -2063,7 +2075,7 @@ def get_concept_blocks(
         return "\n".join(lines)
 
     except Exception as e:
-        return f"Error fetching concept blocks for {code}: {str(e)}"
+        return _eastmoney_data_missing("所属概念板块数据", e)
 
 
 # ---- 14. get_fund_flow ----
@@ -2178,7 +2190,10 @@ def get_fund_flow(
         return "\n".join(lines)
 
     except Exception as e:
-        return f"Error fetching fund flow for {code}: {str(e)}"
+        return "\n".join([
+            f"# 个股资金流 | {code}",
+            _eastmoney_data_missing("个股主力资金数据", e),
+        ])
 
 
 # ---------------------------------------------------------------------------
@@ -2235,7 +2250,7 @@ def get_dragon_tiger_board(
                     f"| {turnover:.2f}%"
                 )
     except Exception as e:
-        lines.append(f"龙虎榜列表查询失败: {e}")
+        lines.append(_eastmoney_data_missing("龙虎榜数据", e))
 
     # 2. 最近上榜的买卖席位 — eastmoney datacenter direct HTTP
     try:
@@ -2354,7 +2369,7 @@ def get_lockup_expiry(
         else:
             lines.append("\n无历史解禁记录。")
     except Exception as e:
-        lines.append(f"个股解禁查询失败: {e}")
+        lines.append(_eastmoney_data_missing("历史解禁数据", e))
 
     # 2. 未来待解禁 — eastmoney datacenter direct HTTP
     try:
@@ -2385,7 +2400,7 @@ def get_lockup_expiry(
         else:
             lines.append(f"\n未来 {forward_days} 天无待解禁。")
     except Exception as e:
-        lines.append(f"解禁日历查询失败: {e}")
+        lines.append(_eastmoney_data_missing("未来解禁数据", e))
 
     return "\n".join(lines)
 
@@ -2456,6 +2471,6 @@ def get_industry_comparison(
         else:
             lines.append("行业数据获取为空。")
     except Exception as e:
-        lines.append(f"行业对比查询失败: {e}")
+        lines.append(_eastmoney_data_missing("行业横向对比数据", e))
 
     return "\n".join(lines)

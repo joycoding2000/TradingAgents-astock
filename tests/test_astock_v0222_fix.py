@@ -132,8 +132,8 @@ def test_juliangip_rejects_invalid_proxy_response():
         a_stock._parse_juliangip_proxy({"code": 200, "data": {"proxy_list": ["bad"]}})
 
 
-def test_em_get_refuses_direct_connection_when_dynamic_proxy_is_unavailable(monkeypatch):
-    """配置动态代理后取代理失败，不能绕回 IDC 直连。"""
+def test_em_get_refuses_direct_connection_when_dynamic_proxy_is_unavailable(monkeypatch, caplog):
+    """动态代理失败只写日志，调用方收到脱敏的东财数据不可用异常。"""
     import pytest
     from tradingagents.dataflows import a_stock
 
@@ -149,12 +149,48 @@ def test_em_get_refuses_direct_connection_when_dynamic_proxy_is_unavailable(monk
         lambda *args, **kwargs: called.__setitem__("session", True),
     )
     try:
-        with pytest.raises(a_stock._requests.exceptions.ProxyError):
+        with pytest.raises(a_stock._EastmoneyDataUnavailable) as exc_info:
             a_stock._em_get("https://push2.eastmoney.com/api/qt/stock/get")
         assert called["session"] is False
+        assert "代理" not in str(exc_info.value)
+        assert "动态代理" in caplog.text
     finally:
         monkeypatch.delenv("JULIANGIP_API_URL", raising=False)
         importlib.reload(a_stock)
+
+
+def test_eastmoney_failure_is_data_missing_without_proxy_details(monkeypatch):
+    """资金流、行业对比失败时输出数据缺失标记，不向报告泄露代理错误。"""
+    from tradingagents.dataflows import a_stock
+
+    def unavailable(*args, **kwargs):
+        raise a_stock._EastmoneyDataUnavailable("东财数据暂不可用")
+
+    monkeypatch.setattr(a_stock, "_em_get", unavailable)
+    fund_flow = a_stock.get_fund_flow("600519", "2026-07-17")
+    industry = a_stock.get_industry_comparison("600519", "2026-07-17")
+
+    assert "[数据缺失: 个股主力资金数据暂不可用]" in fund_flow
+    assert "[数据缺失: 行业横向对比数据暂不可用]" in industry
+    assert "代理" not in fund_flow + industry
+    assert "东财数据暂不可用" not in fund_flow + industry
+
+
+def test_concept_blocks_failure_is_data_missing_without_proxy_details(monkeypatch):
+    """东财 F10 失败同样返回统一的数据缺失标记。"""
+    from tradingagents.dataflows import a_stock
+
+    monkeypatch.setattr(
+        a_stock,
+        "_em_get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            a_stock._EastmoneyDataUnavailable("东财数据暂不可用")
+        ),
+    )
+    result = a_stock.get_concept_blocks("600519")
+
+    assert result == "[数据缺失: 所属概念板块数据暂不可用]"
+    assert "代理" not in result
 
 
 def test_hard_check_no_longer_c_for_3_missing():
