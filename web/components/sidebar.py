@@ -12,6 +12,7 @@ import streamlit.components.v1 as components
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.checkpointer import clear_checkpoint
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
+from tradingagents.version import __version__ as APP_VERSION
 from web.history import (
     clear_incomplete_task,
     get_history,
@@ -217,14 +218,14 @@ def render_sidebar() -> None:
     """Render the sidebar with input controls and history."""
 
     st.markdown(
-        """
+        f"""
         <div style="text-align:center; margin-bottom:1.5rem;">
             <span style="font-size:2rem; font-weight:800; color:#ff5a1f;">Trading</span><span style="font-size:2rem; font-weight:800; color:#f5f1eb;">Agents</span><span style="font-size:2rem; font-weight:800; color:#f5f1eb;">-</span><span style="font-size:2rem; font-weight:800; color:#ff5a1f;">Astock</span>
             <div style="font-size:0.85rem; color:#888; margin-top:0.2rem;">
                 A股多Agent投研系统
             </div>
             <div style="font-size:0.75rem; color:#666; margin-top:0.3rem;">
-                v0.2.22 by joycoding2000
+                v{APP_VERSION} by joycoding2000
             </div>
         </div>
         """,
