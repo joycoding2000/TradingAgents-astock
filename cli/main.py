@@ -25,7 +25,7 @@ from rich.align import Align
 from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.config import get_config
 from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
@@ -946,7 +946,7 @@ def run_analysis(checkpoint: bool = False):
     selections = get_user_selections()
 
     # Create config with selected research depth
-    config = DEFAULT_CONFIG.copy()
+    config = get_config()
     config["max_debate_rounds"] = selections["research_depth"]
     config["max_risk_discuss_rounds"] = selections["research_depth"]
     config["quick_think_llm"] = selections["shallow_thinker"]

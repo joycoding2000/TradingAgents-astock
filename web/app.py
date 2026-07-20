@@ -18,7 +18,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 # 注意：load_dotenv 仅在进程启动时执行一次，启动后修改 .env 仍需重启 Web 服务才生效。
 load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from tradingagents.dataflows.config import get_config  # noqa: E402
 
 from web.components.progress_panel import render_progress  # noqa: E402
 from web.components.report_viewer import render_report  # noqa: E402
@@ -209,26 +209,26 @@ if not _render_login_gate():
 # ── Build config ─────────────────────────────────────────────────────────────
 
 def _build_config(analysis_mode: str | None = None) -> dict:
-    config = DEFAULT_CONFIG.copy()
-    config["llm_provider"] = st.session_state.get("llm_provider", "minimax")
-    config["deep_think_llm"] = st.session_state.get("deep_think_llm", "MiniMax-M2.7")
-    config["quick_think_llm"] = st.session_state.get("quick_think_llm", "MiniMax-M2.7-highspeed")
+    """Build config using layered defaults (yaml + env + runtime overrides).
+
+    Priority for each key (highest → lowest):
+      1. User's current sidebar selection (st.session_state)
+      2. config.yaml / TRADINGAGENTS_* env vars (via get_config)
+      3. default_config.py hardcoded defaults
+    """
+    config = get_config()
+    config["llm_provider"] = st.session_state.get("llm_provider", config["llm_provider"])
+    config["deep_think_llm"] = st.session_state.get(
+        "deep_think_llm", config["deep_think_llm"]
+    )
+    config["quick_think_llm"] = st.session_state.get(
+        "quick_think_llm", config["quick_think_llm"]
+    )
     # Optional third-party / proxy endpoint. Sidebar input wins, else .env BACKEND_URL.
     backend_url = (st.session_state.get("llm_base_url") or os.getenv("BACKEND_URL") or "").strip()
-    config["backend_url"] = backend_url or None
-    config["data_vendors"] = {
-        "core_stock_apis": "a_stock",
-        "technical_indicators": "a_stock",
-        "fundamental_data": "a_stock",
-        "news_data": "a_stock",
-        "signal_data": "a_stock",
-    }
-    config["max_debate_rounds"] = 1
-    config["max_risk_discuss_rounds"] = 1
-    config["checkpoint_enabled"] = True
-    config["output_language"] = "Chinese"
+    config["backend_url"] = backend_url or config.get("backend_url")
     config["analysis_mode"] = (
-        analysis_mode or st.session_state.get("analysis_mode", "full")
+        analysis_mode or st.session_state.get("analysis_mode", config["analysis_mode"])
     )
     return config
 
@@ -248,7 +248,7 @@ if start_req:
 
         clear_incomplete_task(start_req["ticker"], start_req["trade_date"])
         clear_checkpoint(
-            DEFAULT_CONFIG["data_cache_dir"],
+            get_config()["data_cache_dir"],
             start_req["ticker"],
             start_req["trade_date"],
         )

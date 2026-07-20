@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.29] - 2026-07-20
+
+### 新增
+- **全局 YAML 配置系统**：新增 `config.yaml.example` 模板，所有可调参数带中文注释说明。
+  `tradingagents/dataflows/config.py` 新增三层优先级（环境变量 > config.yaml > 默认值）。
+  支持 `TRADINGAGENTS_*` 环境变量覆盖，无需改代码即可调整辩论轮数、分析模式等参数。
+
+### 改进
+- **去除入口硬编码**：`web/app.py`、`cli/main.py`、`main.py` 统一走 `get_config()`，不再手动
+  重构 `data_vendors`/`max_debate_rounds`/`checkpoint_enabled` 等硬编码值。
+- **配置优先级文档化**：`config.yaml.example` 每项参数均附带取值范围、建议值和原理说明。
+
+### 依赖
+- 新增 `pyyaml>=6.0`。
+
 ## [0.2.28] - 2026-07-20
 
 ### 新增

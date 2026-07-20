@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
-import os
 import re
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.config import get_config
 from tradingagents.graph.checkpointer import clear_checkpoint
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
 from tradingagents.version import __version__ as APP_VERSION
@@ -61,7 +60,7 @@ def _resolve_user_input(raw: str) -> tuple[str, str | None]:
 
 def _clear_analysis_artifacts(ticker: str, trade_date: str) -> None:
     clear_incomplete_task(ticker, trade_date)
-    clear_checkpoint(DEFAULT_CONFIG["data_cache_dir"], ticker, trade_date)
+    clear_checkpoint(get_config()["data_cache_dir"], ticker, trade_date)
 
 
 def _render_analysis_controls(raw_ticker: str, trade_date_value: date) -> None:
@@ -145,11 +144,12 @@ def _render_analysis_controls(raw_ticker: str, trade_date_value: date) -> None:
 def _render_llm_config() -> None:
     """Render LLM provider and model selection controls."""
 
-    # 默认 provider/model 从环境变量读（.env 配 DEFAULT_LLM_PROVIDER 等），
-    # 首次进入会话时默认选中，避免每次登录都要手动重选。已选过则尊重用户选择。
-    env_provider = os.getenv("DEFAULT_LLM_PROVIDER", "").strip().lower()
-    if env_provider and env_provider in _PROVIDER_KEYS and "llm_provider_idx" not in st.session_state:
-        st.session_state["llm_provider_idx"] = _PROVIDER_KEYS.index(env_provider)
+    # 默认提供商标记从 config.yaml / get_config() 读取，首次进入会话时默认选中，
+    # 避免每次登录都要手动重选。已选过则尊重用户选择。
+    cfg = get_config()
+    default_provider = cfg.get("llm_provider", "").strip().lower()
+    if default_provider and default_provider in _PROVIDER_KEYS and "llm_provider_idx" not in st.session_state:
+        st.session_state["llm_provider_idx"] = _PROVIDER_KEYS.index(default_provider)
 
     provider_idx = st.selectbox(
         "LLM 供应商",
@@ -170,12 +170,12 @@ def _render_llm_config() -> None:
         deep_labels = [label for label, _ in deep_options]
         deep_values = [value for _, value in deep_options]
 
-        env_quick = os.getenv("DEFAULT_QUICK_MODEL", "").strip()
-        if env_quick and env_quick in quick_values and "quick_model_idx" not in st.session_state:
-            st.session_state["quick_model_idx"] = quick_values.index(env_quick)
-        env_deep = os.getenv("DEFAULT_DEEP_MODEL", "").strip()
-        if env_deep and env_deep in deep_values and "deep_model_idx" not in st.session_state:
-            st.session_state["deep_model_idx"] = deep_values.index(env_deep)
+        default_quick = cfg.get("quick_think_llm", "").strip()
+        if default_quick and default_quick in quick_values and "quick_model_idx" not in st.session_state:
+            st.session_state["quick_model_idx"] = quick_values.index(default_quick)
+        default_deep = cfg.get("deep_think_llm", "").strip()
+        if default_deep and default_deep in deep_values and "deep_model_idx" not in st.session_state:
+            st.session_state["deep_model_idx"] = deep_values.index(default_deep)
 
         quick_idx = st.selectbox(
             "快速思考模型",

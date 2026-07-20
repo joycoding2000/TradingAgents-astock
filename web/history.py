@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.config import get_config
 
 
 _INCOMPLETE_TASKS_FILE = Path.home() / ".tradingagents" / "incomplete_tasks.json"
@@ -117,7 +117,7 @@ def _checkpoint_step(ticker: str, trade_date: str) -> int | None:
     try:
         from tradingagents.graph.checkpointer import checkpoint_step
 
-        return checkpoint_step(DEFAULT_CONFIG["data_cache_dir"], ticker, trade_date)
+        return checkpoint_step(get_config()["data_cache_dir"], ticker, trade_date)
     except Exception:
         return None
 

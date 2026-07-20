@@ -221,5 +221,8 @@ __marimo__/
 # Playwright MCP temp (浏览器工具残留，非项目文件)
 .playwright-mcp/
 
+# 本地配置文件（git tracked 的是 config.yaml.example）
+config.yaml
+
 # Claude Code 私有文件（plan/skills/cache，非项目文件）
 .claude/
