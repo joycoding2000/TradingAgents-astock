@@ -71,23 +71,39 @@
 ## 架构概览
 
 ```
-┌──────────────────────────────────────────────┐
-│        7 Analyst 并行研报生成                  │
-│  Market  Social  News  Fundamentals           │
-│  Policy  HotMoney  Lockup（并行，独立通道）      │
-├──────────────────────────────────────────────┤
-│              数据质量门控                       │
-│  （工具台账→分领域评级→结论约束注入下游）          │
-├──────────────────────────────────────────────┤
-│            Bull vs Bear 辩论                   │
-│         → Research Manager 综合研判           │
-├──────────────────────────────────────────────┤
-│             Trader 交易方案                    │
-│          → 三方风险辩论                        │
-├──────────────────────────────────────────────┤
-│          Portfolio Manager 最终决策            │
-└──────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│              代码统一采集确定性数据快照                      │
+│  固定请求计划 → 逐项状态台账 → 编号/时间戳 → 持久化            │
+├─────────────────────────────────────────────────────────┤
+│              7 位 Analyst 并行读取快照                      │
+│  技术 / 情绪 / 新闻 / 基本面 / 政策 / 游资 / 解禁              │
+│              （模型无数据工具，只负责解释）                    │
+├─────────────────────────────────────────────────────────┤
+│                代码数据质量门控                            │
+│        数据齐全 / 部分成功 / 关键数据缺失                     │
+├─────────────────────────────────────────────────────────┤
+│               Bull vs Bear 投研辩论                       │
+│         Bull Researcher ←→ Bear Researcher               │
+│               （最多 N 轮辩论）                             │
+├─────────────────────────────────────────────────────────┤
+│              Research Manager 综合研判                     │
+│         （深度思考 LLM，输出投资计划）                       │
+├─────────────────────────────────────────────────────────┤
+│                  Trader 交易方案                          │
+│         （A 股约束：T+1/涨跌停/手数）                       │
+├─────────────────────────────────────────────────────────┤
+│        Aggressive ←→ Conservative ←→ Neutral             │
+│               三方风险辩论                                 │
+├─────────────────────────────────────────────────────────┤
+│            Portfolio Manager 最终决策                      │
+│            （深度思考 LLM，输出五档评级）                    │
+├─────────────────────────────────────────────────────────┤
+│              代码结论一致性校验                            │
+│      评级 / 操作倾向 / 风险说明 / 数据状态必须一致              │
+└─────────────────────────────────────────────────────────┘
 ```
+
+七项分析固定采集 17 类数据、24 个请求（其中技术指标 8 项）；三项速览固定采集 10 类数据、17 个请求。共享数据只取一次，接口失败会进入台账并限制对应结论，模型不能自行决定少取或补取数据。
 
 **双 LLM 设计**：
 - `quick_think_llm`：所有 Analyst、Researcher、Trader、Risk Debater
@@ -99,20 +115,20 @@
 
 ### 原版 4 角色（A 股适配）
 
-| 角色 | 职责 | 数据工具 |
+| 角色 | 职责 | 读取的快照栏目 |
 |------|------|---------|
-| 🏪 市场分析师 | K 线形态、技术指标、量价分析 | K 线数据 + 常用技术指标（均线/MACD/RSI/布林带） |
-| 💬 舆情分析师 | 社交媒体情绪、散户讨论热度 | `get_news` |
-| 📰 新闻分析师 | 行业新闻、公告、宏观事件 | `get_news`, `get_global_news`, `get_insider_transactions` |
-| 📊 基本面分析师 | 财报三表、盈利能力、估值 | `get_fundamentals`, `get_balance_sheet`, `get_cashflow`, `get_income_statement` |
+| 🏪 市场分析师 | K 线形态、技术指标、量价分析 | 股价成交量、8 项固定技术指标 |
+| 💬 舆情分析师 | 根据已有公司新闻评估市场情绪 | 公司相关新闻 |
+| 📰 新闻分析师 | 行业新闻、公告、宏观事件 | 公司新闻、市场新闻 |
+| 📊 基本面分析师 | 财报三表、盈利能力、估值 | 公司情况、财报三表、机构预期、行业对比 |
 
 ### A 股特化 3 角色（新增）
 
-| 角色 | 职责 | 数据工具 | 为什么需要 |
+| 角色 | 职责 | 读取的快照栏目 | 为什么需要 |
 |------|------|---------|-----------|
-| 🏛️ 政策分析师 | 监管政策、产业政策、窗口指导 | `get_news`, `get_global_news` | A 股是政策市，政策变化直接影响板块轮动 |
-| 🔥 游资追踪师 | 龙虎榜、大单流向、主力资金动态 | `get_stock_data`, `get_news`, `get_insider_transactions` | 游资是 A 股短线定价的核心力量 |
-| 🔓 解禁监控师 | 限售股解禁、大股东减持、股权质押 | `get_insider_transactions`, `get_news`, `get_fundamentals` | 解禁是 A 股特有的重大供给冲击因素 |
+| 🏛️ 政策分析师 | 监管政策、产业政策、窗口指导 | 公司新闻、市场新闻 | A 股是政策市，政策变化直接影响板块轮动 |
+| 🔥 游资追踪师 | 龙虎榜、大单流向、主力资金动态 | 量价、新闻、资金、板块、热门股、龙虎榜等 | 游资是 A 股短线定价的核心力量 |
+| 🔓 解禁监控师 | 限售股解禁、大股东减持 | 股东变化、公司情况、新闻、解禁日历 | 解禁是 A 股特有的重大供给冲击因素 |
 
 所有 7 个 Analyst 的报告会流入后续的 Bull/Bear 辩论和三方风险辩论，确保 A 股特色因素贯穿整条决策链。
 
@@ -130,13 +146,12 @@
 | **新浪财经** | HTTP | K 线历史、财报三表 |
 | **同花顺** | HTTP (10jqka) | EPS 一致预期 |
 | **财联社** | HTTP (cls.cn) | 全球财经快讯 |
-| **百度股市通** | HTTP (finance.pae.baidu) | 概念板块分类、资金流向 |
 
 > 完全不依赖 Tushare（积分墙）、Alpha Vantage（海外 API）、Yahoo Finance（不支持 A 股）。
 
 ---
 
-> **东财防封机制**：所有东财请求统一走节流入口，串行限流（默认间隔 ≥1s + 随机抖动）+ 自动重试 + 动态代理轮换。多 Agent 并发不再触发封 IP。仅东财限流，其他数据源不受影响。
+> **数据源优先级 & 东财防封（v0.2.11）**：行情 / K线 / 市值 / 财务能从 mootdx（通达信 TCP，不封 IP）或腾讯拿到的，一律走它们；东财只用于它独有的数据（龙虎榜 / 解禁 / 资金流 / 板块 / 个股新闻等）。所有东财请求统一走内置节流入口 `_em_get()`：串行限流（默认间隔 ≥1s + 0.1~0.5s 随机抖动）+ 复用 Keep-Alive 会话。批量场景可设环境变量 `EM_MIN_INTERVAL=1.5~2` 进一步降速。**仅东财限流，mootdx / 腾讯 / 新浪 / 同花顺 / 财联社不受影响。**
 
 ## 快速开始
 
@@ -187,34 +202,42 @@ ANTHROPIC_API_KEY=sk-ant-xxx
 ANTHROPIC_AUTH_TOKEN=your-kimi-token
 ```
 
-也可复制 `config.yaml.example` 为 `config.yaml`，调整辩论轮数、默认模型等参数（可选）。详见[配置说明](#配置说明)。
-
 ### 3. 运行分析
 
-根据你选择的供应商，在 `config.yaml` 中设置 `llm_provider` 和模型，或直接在代码中覆盖：
+根据你选择的供应商修改 config：
 
 ```python
-from tradingagents.dataflows.config import get_config
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
-config = get_config()
-config["llm_provider"] = "minimax"
-config["deep_think_llm"] = "MiniMax-M2.7"
-config["quick_think_llm"] = "MiniMax-M2.7-highspeed"
+# ── MiniMax 示例（推荐）─────────────────────────────
+config = {
+    "llm_provider": "minimax",
+    "deep_think_llm": "MiniMax-M2.7",
+    "quick_think_llm": "MiniMax-M2.7-highspeed",
+    "output_language": "Chinese",
+}
+
+# ── DeepSeek 示例 ───────────────────────────────────
+# config = {
+#     "llm_provider": "deepseek",
+#     "deep_think_llm": "deepseek-chat",
+#     "quick_think_llm": "deepseek-chat",
+#     "output_language": "Chinese",
+# }
+
+# ── Anthropic + Kimi 示例 ───────────────────────────
+# config = {
+#     "llm_provider": "anthropic",
+#     "deep_think_llm": "claude-sonnet-4-6",
+#     "quick_think_llm": "claude-sonnet-4-6",
+#     "backend_url": "https://api.kimi.com/coding/",
+#     "output_language": "Chinese",
+# }
 
 ta = TradingAgentsGraph(debug=True, config=config)
 final_state, decision = ta.propagate("688017", "2026-05-12")
 print(decision)
 ```
-
-各供应商的配置速查：
-
-| 供应商 | `llm_provider` | `deep_think_llm` | `quick_think_llm` | 可选 `backend_url` |
-|--------|---------------|------------------|------------------|-------------------|
-| MiniMax（推荐） | `minimax` | `MiniMax-M2.7` | `MiniMax-M2.7-highspeed` | |
-| DeepSeek | `deepseek` | `deepseek-chat` | `deepseek-chat` | |
-| OpenAI | `openai` | `gpt-5.4` | `gpt-5.4-mini` | |
-| Anthropic | `anthropic` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `https://api.kimi.com/coding/`（Kimi 中转） |
 
 ### 4. CLI 方式
 
@@ -244,13 +267,11 @@ streamlit run web/app.py
 ### 功能
 
 - **模型自选**：侧边栏支持 9 个 LLM 供应商切换（MiniMax/DeepSeek/Qwen/GLM/OpenAI/Anthropic/Google/xAI/Ollama）
-- **一键分析**：支持 6 位代码、股票名称、拼音首字母输入，进入页面即自动聚焦输入框
-- **分析模式**：可选「完整分析」（7 角度）或「快速分析」（技术/新闻/基本面），均执行质量门控和完整风控链
-- **实时进度**：全流程阶段实时展示，所有已完成报告均可展开查看
-- **通俗结论**：优先展示最终决策，信号和术语全部转成通俗中文
-- **报告导出**：一键下载 **Markdown**（零依赖）或 **PDF** 完整分析报告
-- **阶段耗时**：展示各阶段耗时和模型调用次数
-- **历史记录**：自动保存并展示所有历史分析
+- **一键分析**：输入 6 位 A 股代码、股票名称或拼音首字母 + 日期，点击「开始分析」
+- **实时进度**：13 阶段实时显示（统一采集 → 7 分析师 → 质量门控 → 辩论 → 风控 → 决策）
+- **完整报告**：中文结论卡片、数据快照状态、7 份分析师报告、多空辩论、风控评估
+- **报告导出**：一键下载 **Markdown**（零依赖，永远可用）或 **PDF** 完整分析报告（PDF 自动适配 Windows/macOS/Linux 中文字体）
+- **历史记录**：自动保存并展示所有历史分析，按分析范围和数据可用性显示可信度星级
 
 ### 截图
 
@@ -262,55 +283,21 @@ streamlit run web/app.py
 
 ## 配置说明
 
-配置采用三层优先级（高 → 低）：
+配置采用三层优先级（高 → 低）：环境变量 `TRADINGAGENTS_*`、项目根目录的 `config.yaml`、代码默认值。可复制 `config.yaml.example` 为 `config.yaml`，完整参数说明见该文件；`.env` 仅用于 API 密钥与代理，不存放业务配置。以下是主要配置项：
 
-```
-环境变量 TRADINGAGENTS_*        → 临时覆盖，适合服务器 / Docker 部署
-config.yaml（项目根目录）        → 持久化全局配置（参考 config.yaml.example）
-tradingagents/default_config.py  → 硬编码默认值
-```
-
-### 方式一：config.yaml（推荐）
-
-复制 `config.yaml.example` 为 `config.yaml`，每项参数均有中文注释说明取值范围和原理：
-
-```yaml
-# 关键参数速览（完整注释见 config.yaml.example）
-output_language: Chinese          # 报告语言
-analysis_mode: full               # full / fast
-max_debate_rounds: 2              # 辩论轮数（建议 2-3）
-checkpoint_enabled: false         # 断点续跑
-llm_provider: openai              # 默认 LLM 供应商
-deep_think_llm: gpt-5.4           # 深度推理模型
-quick_think_llm: gpt-5.4-mini     # 快速推理模型
-```
-
-### 方式二：环境变量
-
-无需 `config.yaml`，直接在 `.env` 或 shell 中设置：
-
-```bash
-export TRADINGAGENTS_DEBATE_ROUNDS=3
-export TRADINGAGENTS_CHECKPOINT_ENABLED=true
-export TRADINGAGENTS_LLM_PROVIDER=deepseek
-export TRADINGAGENTS_DEEP_THINK_LLM=deepseek-chat
-export TRADINGAGENTS_QUICK_THINK_LLM=deepseek-chat
-# 完整清单见 config.yaml.example 或 default_config.py
-```
-
-### 方式三：代码内联（脚本调用时）
-
-```python
-from tradingagents.dataflows.config import get_config
-
-config = get_config()
-config["max_debate_rounds"] = 3
-config["deep_think_llm"] = "deepseek-chat"
-
-ta = TradingAgentsGraph(debug=True, config=config)
-```
-
-> `.env` 仅用于存放 API Key 和代理地址（`EM_HTTP_PROXY` 等），不存放业务配置参数。
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `llm_provider` | `"minimax"` | LLM 提供商：`minimax` / `deepseek` / `qwen` / `glm` / `openai` / `anthropic` / `google` / `xai` / `ollama` |
+| `deep_think_llm` | `"MiniMax-M2.7"` | Research Manager + Portfolio Manager 用的模型 |
+| `quick_think_llm` | `"MiniMax-M2.7-highspeed"` | 所有 Analyst / Researcher / Trader 用的模型 |
+| `backend_url` | `None` | 自定义 API 端点 / 第三方中转网关。可在 Web UI 侧边栏填写，或用 `.env` 的 `BACKEND_URL`；方便国内通过代理访问 Claude / OpenAI |
+| `output_language` | `"Chinese"` | 报告输出语言（内部辩论始终英文） |
+| `analysis_mode` | `"full"` | `full` 为七项分析；`fast` 为技术、新闻、基本面三项速览，两者均执行质量门控 |
+| `max_debate_rounds` | `1` | Bull vs Bear 辩论轮数 |
+| `max_risk_discuss_rounds` | `1` | 风险三方辩论轮数 |
+| `data_vendors` | 全部 `"a_stock"` | 数据供应商路由 |
+| `checkpoint_enabled` | `False` | 启用 SQLite 断点续跑 |
+| `memory_log_max_entries` | `None` | 交易记忆最大条目数 |
 
 ---
 
@@ -329,7 +316,7 @@ v0.2.12 起 Dockerfile 已内置 `fonts-noto-cjk`，重新 `docker build` 即可
 旧版镜像里没预建数据目录，`docker-compose` 的命名卷挂上来时被 Docker 建成 `root` 属主，而容器内进程以 `appuser` 运行、写不进去。v0.2.14 起 Dockerfile 已预建 `/home/appuser/.tradingagents`（cache/logs/memory）并归属 appuser，命名卷会继承该属主。**升级方式**：`git pull` 后 `docker compose build --no-cache` 重建镜像；若想保留旧数据卷可先 `docker run --rm -v tradingagents_data:/d alpine chown -R 1000:1000 /d` 修正属主，否则 `docker volume rm tradingagents_data` 后重建即可。
 
 **Q: 部分分析师报告（情绪/新闻/基本面/政策/游资/解禁）空白不显示？**
-这些报告由对应 Analyst 调用数据工具后生成，**空报告会被自动跳过不显示**。数据源本身是健康的（腾讯/mootdx/同花顺/东财实测出数）；报告为空通常是**所选模型 tool-call 能力弱**（如部分 deepseek/minimax 轻量模型不稳定地调用工具）。建议换用 tool-call 更稳的模型（deepseek-chat / 通义 / GLM-4 / Claude / GPT 等），或重试。
+v0.2.30 起数据由代码先统一采集，分析师不再调用工具，模型的工具调用能力不会造成漏取数据。请先在报告中的“统一数据快照”查看对应栏目状态：若显示“获取失败”，属于数据源或网络问题；若数据可用但报告仍为空，通常是模型生成失败，可重试或更换模型。质量门控会把空报告和数据缺失分别记录，不会把空白当成完整结果。
 
 **Q: 装 `[google]`（Gemini）后 pip 报 httpx 冲突：mootdx 要 `httpx<0.26`、google-genai 要 `httpx>=0.28`？**
 先澄清：**litellm / mcp 不是本项目的依赖**——报错里若提到它们，是你环境里其它包带来的，与 TradingAgents 无关。本项目核心安装（`pip install -e .`）不依赖 httpx≥0.28，**默认不冲突**；冲突只在装 `[google]` 用 Gemini 时出现（mootdx 与 google-genai 的 httpx 上下限互斥）。解法：① **mootdx 取行情走 TCP 协议、运行时根本不调用 httpx**，可让 httpx 升到满足 google-genai 的版本，pip 那条 `incompatible` 只是警告、不影响 mootdx 运行（实测 mootdx 0.11.7 在 httpx 0.28.1 下取数正常）；② 或把跑 Gemini 的环境与 mootdx 数据层分到不同 venv；③ 最省心是用 MiniMax / DeepSeek / 通义等国内直连模型，不装 `[google]` 就没这问题。
@@ -379,7 +366,6 @@ TradingAgents-Astock/
 │       ├── sidebar.py         # 侧边栏（输入 + 历史）
 │       ├── progress_panel.py  # 实时进度面板
 │       └── report_viewer.py   # 报告展示
-├── config.yaml.example        # 全局配置模板（复制为 config.yaml 使用）
 ├── test_astock.py             # E2E 集成测试
 ├── CHANGES_FROM_UPSTREAM.md   # 与上游的完整改动记录
 ├── NOTICE                     # Apache 2.0 归属声明

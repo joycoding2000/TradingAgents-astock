@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/joycoding2000/TradingAgents-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.2.28
+- **当前版本**: 0.2.30
 
 ## 架构
 
@@ -21,7 +21,6 @@
 | 新浪财经 | HTTP (money.finance.sina) | K线历史、财报三表 |
 | 同花顺 10jqka | HTTP | EPS 一致预期、热股题材 |
 | 财联社 cls.cn | HTTP | 全球财经快讯 |
-| 百度股市通 | HTTP (gushitong.baidu) | 概念板块归属（资金流已迁移至东财push2） |
 
 ### Agent 角色（7 个）
 原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）
@@ -34,7 +33,7 @@
 - `cli/` — CLI 入口
 
 ### 中文股票名解析链路
-用户/LLM 输入 → `safe_ticker_component` 检测中文 → `resolve_ticker()` → `_build_name_code_map()`（mootdx 全市场映射，缓存）→ 返回 6 位代码
+用户输入 → `safe_ticker_component` 检测中文或简拼 → `resolve_ticker()` → `_build_name_code_map()`（mootdx 全市场映射，缓存）→ 返回 6 位代码
 
 ## 已知问题与注意事项
 
@@ -54,7 +53,7 @@ v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取
 `get_fundamentals` / 三表 / `get_profit_forecast` 曾因三个 bug 静默丢数据（各源 try/except 吞错只留 warning）：(1) mootdx `client.finance()` 字段为拼音缩写（`jinglirun`/`zhuyingshouru`/`meigujingzichan`...），旧 `field_map` 用 `eps`/`roe` 英文名取不到，已改拼音字段并推算 `EPS=jinglirun/zongguben`、`ROE=jinglirun/jingzichan*100`；(2) 新浪财报实际结构为 `result.data.report_list[日期]["data"]`，旧代码误用 `result.data.lrb` key 致三表恒空，已重写解析；(3) pandas 3.0 `read_html` 不再接受裸 HTML 字符串（当文件路径 open），同花顺 EPS 崩溃，已改 `pd.read_html(io.StringIO(r.text))`。回归测试见 `tests/test_astock_fundamentals_fix.py`，详见 `issues/006-fundamentals-data-missing.md`。主力资金 `get_fund_flow`（东财 push2）接口本身可用，无需改动。
 
 ### 概念板块/股东数据接口迁移（v0.2.20 已修复）
-`get_concept_blocks`（百度 PAE `getrelatedblock` 返回 403 下线）迁移至东财 F10 `CoreConception/PageAjax`（ssbk 所属板块 + hxtc 核心题材）；`get_insider_transactions`（mootdx F10 仅返回"最新提示"栏目，通达信 TCP F10 无股东研究）迁移至东财 `RPT_F10_EH_HOLDERS`（按 END_DATE 降序取最新一期十大股东持股变化）。注意：东财 ssbk 不含板块当日涨幅（百度 PAE 原有），仅返回板块归属。`get_industry_comparison`（东财 push2 clist）代码无 bug，偶发缺失是东财连接/LLM 未调用，无需改代码。回归测试见 `tests/test_astock_interface_fix.py`，详见 `issues/007-interface-migration.md`。
+`get_concept_blocks`（百度 PAE `getrelatedblock` 返回 403 下线）迁移至东财 F10 `CoreConception/PageAjax`（ssbk 所属板块 + hxtc 核心题材）；`get_insider_transactions`（mootdx F10 仅返回"最新提示"栏目，通达信 TCP F10 无股东研究）迁移至东财 `RPT_F10_EH_HOLDERS`（按 END_DATE 降序取最新一期十大股东持股变化）。注意：东财 ssbk 不含板块当日涨幅（百度 PAE 原有），仅返回板块归属。`get_industry_comparison`（东财 push2 clist）代码无 bug，偶发缺失通常是东财连接失败。回归测试见 `tests/test_astock_interface_fix.py`，详见 `issues/007-interface-migration.md`。
 
 ### 门控矛盾 + push2 IDC 封禁 + prompt 假缺失（v0.2.22 已修复）
 服务器跑 601689 门控暴露"基本面硬检查 [C] 3 处缺失 vs LLM 复审判 A"矛盾。三层修复：(1) `quality_gate.py` 硬检查不再因 `[数据缺失]` 数量 ≥3 机械判 C（改判 B，关键性交 LLM 判断）；`_build_review_prompt` 把硬检查结果喂给 LLM 复审，评级标准明确"非必采项缺失不影响 A 级"+ 要求与硬检查不一致需说明；消除两层矛盾。(2) `fundamentals_analyst.py` 股权质押/减持计划预披露/关联交易（系统无接口）从硬要求改为"系统未采集"说明，消除 3 处设计性缺失；`hot_money_tracker.py` 加标注规范，龙虎榜未上榜等正常空结果不标 `[数据缺失]`。(3) `a_stock.py` `_EM_SESSION` 读 `EM_HTTP_PROXY` 环境变量设代理——东财 push2.eastmoney.com 整域名对阿里云 IDC IP 封禁（建连后 RemoteDisconnected），资金流 fflow/行业对比 clist 全失败，设代理走非 IDC 出口绕过；不设则直连（本地无影响）。`_em_get` 重试对 ProxyError 自动兜底。回归测试 `tests/test_astock_v0222_fix.py`（7 例），详见 `issues/009-push2-idc-block.md`。部署：服务器 `.env` 加 `EM_HTTP_PROXY`，`update-server.sh --env`。
@@ -63,10 +62,16 @@ v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取
 v0.2.20 部署后门控暴露股价不一致/行业对比偶发/股东户数与董监高交易缺失。三项修复：(1) `get_fundamentals` 股价对齐——`curr_date` 早于今日时 price 改用该日 K 线收盘价（复用 `get_stock_data` 含新浪 fallback），消除与技术分析基准日的时差（实测 300308 由实时 1169.31 对齐到 07-14 收盘 1184.05）；新增私有 helper `_get_close_on_date`/`_resolve_price`。(2) `_em_get` 加偶发重试——连接异常（RemoteDisconnected/Timeout）或 5xx 时指数退避重试最多 3 次，4xx 不重试，缓解行业对比/资金流偶发失败。(3) `get_insider_transactions` 增强三段——十大股东（RPT_F10_EH_HOLDERS）+ 股东户数变化（F10 `ShareholderResearch/PageAjax` gdrs：HOLDER_TOTAL_NUM/变化比例/户均流通股/筹码集中度）+ 董监高持股变动（F10 `CompanyManagement/PageAjax` cgbd：高管/职务/变动股数/均价/变动方式）。另：DEV_LOG Week 5「14/14 OK」勘误为过时快照（akshare+旧mootdx+pandas2.x，v0.2.5 重写后未复跑），详见 `issues/008-week5-quality-gate-stale-snapshot.md`。回归测试见 `tests/test_astock_v0221_fix.py`（8 例）。
 
 ### 模型兼容性
-deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 位代码。`safe_ticker_component` 已加兜底自动转码，但不同模型表现仍有差异。
+v0.2.30 起七位分析师不再调用数据工具，模型的工具调用能力不再影响数据覆盖率。Research Manager、Trader、Portfolio Manager 的结构化输出仍可能因模型兼容性降级为自由文本，最终结果必须通过代码一致性校验后才能展示操作倾向。
 
 ### 分析性能优化（v0.2.27）
-七位前置分析师已改为并行分支，但每个分支必须使用独立的 `*_messages` 通道；禁止重新共用 `MessagesState.messages` 驱动工具循环，否则并发 ToolMessage 会串线。`RunToolCache` 只在单次分析内按“工具名+完整参数摘要”复用成功和正常空结果，失败/输入无效不缓存。东财请求仍由 `_em_get()` 全周期串行限流，不能为了并行速度放松。快速分析仅运行技术、新闻、基本面三位分析师，仍经过同一质量门控和全部下游风控，结果必须标识覆盖范围较少。耗时包装器只有在节点参数明确命名为 `config` 时才能传 LangGraph 配置；不能按参数数量推断，因为 Trader 等节点还有可选 `name` 参数。
+七位前置分析师已改为并行分支。v0.2.30 的统一数据快照取代了分析师工具循环和单次请求缓存：代码按固定计划去重采集一次，再把只读子集交给各分析师。东财请求仍由 `_em_get()` 全周期串行限流，不能为了并行速度放松。三项速览仅采集并分析技术、新闻、基本面范围，仍经过同一质量门控和全部下游风控。耗时包装器只有在节点参数明确命名为 `config` 时才能传 LangGraph 配置。
+
+### 报告可信度分层（v0.2.28）
+流程完成、分析范围和数据完整度是三个独立维度：历史结果只能标“已完成”，分析范围标“七项分析/三项速览”，数据状态标“数据齐全/部分数据获取成功/关键数据缺失”。可信度星级同时考虑范围和数据状态，三项速览即使范围内数据齐全也最多四星。质量门控必须检查启用分析师应采工具的并集；完全未调用的应采工具视为“未获取”，不得因为台账没有失败记录而判高可信。正常空结果仍视为接口可用，不算数据缺失。
+
+### 确定性数据快照（v0.2.30）
+每次分析先由 `tradingagents/agents/data_snapshot.py` 根据分析范围生成固定请求计划：七项分析为 17 类数据、24 个确定请求（含 8 个固定技术指标），三项速览为 10 类数据、17 个请求。代码逐项记录成功、正常无记录、失败或输入无效，生成带编号和时间戳的持久化快照；七位分析师只能读取分配给自己的快照栏目，不绑定数据工具。最终 Portfolio Manager 文本由 `decision_validator.py` 校验唯一五档评级、明确操作方向和数据状态；关键数据缺失或结论矛盾时禁止展示操作结论、禁止写入经验记忆。
 
 ### 待处理 PR
 - PR #18（hejingchi）：start_date 功能 + 主题切换 + Windows 字体。不建议直接 merge（与 v0.2.6 冲突），start_date 功能值得后续自行实现。
@@ -102,30 +107,30 @@ deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 
 **6. 数据源 try/except 不得静默吞错**
 `a_stock.py` 大量 `try/except` 只写 `logger.warning` 不上抛，调用方无法区分"拿到数据"与"静默失败返回空"。issues/006 三个 bug 共享此根因。新增数据源端点必须：① 明确返回值语义（空 vs 失败）；② 关键接口失败需上抛或返回哨兵值让调用方感知。
 
-### 🟠 提示词与工具
+### 🟠 提示词与快照
 
-**7. 提示词中的函数描述参数名必须与实现完全一致**
-LLM 工具误用的首要根因是提示词描述错。v0.2.18 5 个分析师写 `get_news(query, ...)` 实为 `ticker` → 模型传概念词当股票代码。新增/修改工具时参数名必须与实现精确一致，提示词预防 > 工具层容错。
+**7. 分析师禁止绑定或调用数据工具**
+所有应采数据只能在 `data_snapshot.py` 的固定计划中声明和执行。分析师提示词只能描述快照中的中文栏目，不得出现“自行搜索”“调用工具”或快照未采集的数据。新增数据工具时必须同时更新 `ANALYST_EXPECTED_TOOLS`、固定请求计划和回归测试；计划漏项必须直接报错，不能静默进入分析。
 
 **7. 提示词不得将无 API 接口的数据项列为"必采"**
 `fundamentals_analyst.py` 曾要求股权质押/减持/关联交易但系统全无接口（已改"系统未采集"）。标记为"必采"的数据项必须有对应的工具/接口。正常空结果（"龙虎榜未上榜"）不标 `[数据缺失]`。
 
-**8. 工具输入验证必须返回可恢复 ToolMessage，不能抛异常**
-LangGraph 依赖 ToolMessage 自我纠正。抛异常中断整个 graph。`resolve_ticker` 报错从"找不到"改为"ticker 只接受 6 位代码或完整名称，行业/概念/板块名无效"→ LLM 读到后可自我纠正（v0.2.17 #76）。
+**8. 快照采集失败必须转换为明确状态**
+单个接口异常由快照层记录为“失败”，日志只保留工具名和异常类型，快照正文不得保存错误详情、代理地址或请求参数。失败栏目不得向分析师提供空白以外的伪数据；正常无记录必须与失败严格区分。
 
 **9. 改 prompt 必须用真实 A 股案例验证**
 LLM 行为不可预测——prompt 看似正确但输出可能意外。改 prompt 后必须在实际分析中跑一次（任一股票），验证 LLM 行为与预期一致（DEV_LOG 协作约定）。
 
 ### 🏗 架构约束
 
-**并行分析师禁止共享工具消息通道**
-七条分析师分支分别使用 `market_messages` / `social_messages` / `news_messages` / `fundamentals_messages` / `policy_messages` / `hot_money_messages` / `lockup_messages`。新增分析师时必须新增独立通道并在 `graph/setup.py` 的 `_MESSAGE_FIELDS` 注册；通用 `messages` 仅用于调试展示，不得作为并行分支的工具上下文。
+**数据快照必须先于所有分析师完成**
+图结构固定为 `START → Data Snapshot → 并行分析师 → Quality Gate`。禁止让任一分析师绕过快照直接访问数据层，也禁止把某个分析师的生成文本当作另一个分析师的原始数据。快照记录必须随最终状态持久化，以便复核当时究竟取得了哪些数据。
 
-**单次请求缓存不得缓存失败结果**
-缓存只允许复用 `success` / `normal_empty`，且必须在 `prepare_graph_run()` 清空。缓存命中仍要写工具台账并标记 `cache_hit`；禁止跨股票、跨日期或跨运行缓存实时行情、资金流和新闻。
+**固定计划、应采台账和提示词必须一致**
+同一工具的共享数据只在固定计划中采集一次；多个技术指标必须各自有请求编号和台账行。任何新增或删除栏目，都要同步修改分析师与数据工具的对应关系、快照计划、质量门控约束和测试，避免模型被要求分析不存在的数据。
 
-**新增分析师必须改 6 个文件，漏一个 graph 断**
-文件清单：① analyst body（`tradingagents/agents/analysts/xxx.py`）② `agent_states.py`（加字段）③ `agents/__init__.py`（注册）④ `graph/conditional_logic.py`（路由）⑤ `graph/trading_graph.py`（ToolNode）⑥ `graph/setup.py`（节点注册）。缺任一个 LangGraph 静默跳过该 analyst、无报错（DEV_LOG Week 2）。
+**新增分析师必须贯通快照、状态、图和下游**
+至少修改：① analyst body；② `ANALYST_EXPECTED_TOOLS`；③ 快照请求计划（如引入新工具）；④ `agent_states.py` 报告字段；⑤ `agents/__init__.py` 注册；⑥ `graph/setup.py` 节点；⑦质量门控的报告映射；⑧ Bull/Bear 和三位 Risk Debater 的下游输入。漏任一处都可能造成分析角度静默缺失。
 
 **新分析师报告不自动流入下游，需手动补 5 个 agent**
 Bull/Bear Researcher 和 3 个 Risk Debater 只消费原版 4 报告字段。新增的 `policy_report`/`hot_money_report`/`lockup_report` 需在 5 个下游 prompt 里手工加 `state.get("xxx_report", "")`。不加则新分析师产出在辩论层被静默忽略（CHANGES_FROM_UPSTREAM）。
