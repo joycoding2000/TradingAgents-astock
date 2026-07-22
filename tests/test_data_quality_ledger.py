@@ -100,6 +100,27 @@ def test_ledger_different_requests_keep_partial_failure_as_medium():
     assert summary["failed_scoped"] == ["get_news"]
 
 
+def test_expected_but_never_called_tool_is_not_misreported_as_complete():
+    summary = summarize_tool_ledger(
+        [{"tool_name": "get_stock_data", "status": STATUS_SUCCESS}],
+        expected_tools={"get_stock_data", "get_indicators"},
+    )
+
+    assert summary["confidence"] == "中"
+    assert summary["missing_tools"] == ["get_indicators"]
+    assert "技术指标 | 未获取 | 分项" in format_tool_ledger_summary(summary)
+
+
+def test_expected_stock_data_not_called_blocks_reliable_conclusion():
+    summary = summarize_tool_ledger(
+        [{"tool_name": "get_news", "status": STATUS_SUCCESS}],
+        expected_tools={"get_stock_data", "get_news"},
+    )
+
+    assert summary["confidence"] == "低"
+    assert summary["missing_blocking"] == ["get_stock_data"]
+
+
 def test_ledger_critical_failure_caps_confidence_and_is_auditable():
     summary = summarize_tool_ledger([
         {"tool_name": "get_stock_data", "status": STATUS_FAILED, "critical": True},
@@ -168,6 +189,8 @@ def test_quality_gate_uses_ledger_as_code_enforced_low_confidence_cap():
     result = create_quality_gate(_LLM())(state)
 
     assert result["data_quality_status"] == "低"
+    assert result["data_completeness_status"] == "critical_missing"
+    assert result["report_confidence_score"] == 1
     assert "代码层限制：基础行情失败" in result["data_quality_summary"]
     assert "股价和成交量 | 失败 | 基础" in result["data_quality_summary"]
     assert "不得给出买入、卖出、具体价位或投入比例" in result["data_quality_constraints"]
@@ -234,7 +257,15 @@ def test_log_state_persists_quality_summary_status_and_ledger(tmp_path):
         "lockup_report": "l",
         "data_quality_summary": "台账摘要",
         "data_quality_status": "低",
+        "data_completeness_status": "critical_missing",
+        "report_confidence_score": 1,
         "data_quality_constraints": "不得判断主力资金",
+        "data_snapshot": {
+            "snapshot_id": "snapshot-test",
+            "records": [{"label": "股价和成交量", "status": "failed"}],
+        },
+        "decision_validation_status": "blocked_data",
+        "validated_decision": {"rating": "", "can_show_action": False},
         "tool_execution_ledger": [{"tool_name": "get_stock_data", "status": "failed"}],
         "investment_debate_state": {
             "bull_history": "", "bear_history": "", "history": "",
@@ -253,5 +284,11 @@ def test_log_state_persists_quality_summary_status_and_ledger(tmp_path):
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["data_quality_summary"] == "台账摘要"
     assert saved["data_quality_status"] == "低"
+    assert saved["data_completeness_status"] == "critical_missing"
+    assert saved["report_confidence_score"] == 1
+    assert saved["analysis_completion_status"] == "completed"
     assert saved["data_quality_constraints"] == "不得判断主力资金"
+    assert saved["data_snapshot"]["snapshot_id"] == "snapshot-test"
+    assert saved["decision_validation_status"] == "blocked_data"
+    assert saved["validated_decision"]["can_show_action"] is False
     assert saved["tool_execution_ledger"][0]["status"] == "failed"

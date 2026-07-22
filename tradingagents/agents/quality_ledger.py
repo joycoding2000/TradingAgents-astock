@@ -24,12 +24,14 @@ STATUS_SUCCESS = "success"
 STATUS_NORMAL_EMPTY = "normal_empty"
 STATUS_FAILED = "failed"
 STATUS_INVALID_INPUT = "invalid_input"
+STATUS_NOT_CALLED = "not_called"
 
 _STATUS_LABELS = {
     STATUS_SUCCESS: "成功",
     STATUS_NORMAL_EMPTY: "正常空结果",
     STATUS_FAILED: "失败",
     STATUS_INVALID_INPUT: "输入无效",
+    STATUS_NOT_CALLED: "未获取",
 }
 
 # 台账在网页中展示，工具的内部英文名不能直接暴露给普通用户。
@@ -51,6 +53,41 @@ _TOOL_LABELS = {
     "get_lockup_expiry": "限售股解禁",
     "get_insider_transactions": "股东交易",
     "get_global_news": "市场新闻",
+}
+
+# 每个分析角度在提示词中明确要求调用的数据工具。质量门控不仅检查已经调用的结果，
+# 也检查本次分析范围内本应调用、但模型完全没有调用的工具，避免“没有失败记录”被
+# 误判为“数据齐全”。共享工具按并集检查，同一次分析只需至少取得一次可用结果。
+ANALYST_EXPECTED_TOOLS = {
+    "market": {"get_stock_data", "get_indicators"},
+    "social": {"get_news"},
+    "news": {"get_news", "get_global_news"},
+    "fundamentals": {
+        "get_fundamentals",
+        "get_balance_sheet",
+        "get_cashflow",
+        "get_income_statement",
+        "get_profit_forecast",
+        "get_industry_comparison",
+    },
+    "policy": {"get_news", "get_global_news"},
+    "hot_money": {
+        "get_stock_data",
+        "get_news",
+        "get_insider_transactions",
+        "get_hot_stocks",
+        "get_northbound_flow",
+        "get_concept_blocks",
+        "get_fund_flow",
+        "get_dragon_tiger_board",
+        "get_industry_comparison",
+    },
+    "lockup": {
+        "get_insider_transactions",
+        "get_news",
+        "get_fundamentals",
+        "get_lockup_expiry",
+    },
 }
 
 # 只有行情价格是所有结论共同依赖的硬基础。其他接口失败时，应限制对应领域的结论，
@@ -122,7 +159,7 @@ def _text(value: Any) -> str:
     return str(value or "")
 
 
-def _request_key(call: dict[str, Any]) -> str:
+def make_request_key(call: dict[str, Any]) -> str:
     """同一工具、同一参数的重试共用键；只存不可逆摘要，不存参数正文。"""
     raw = json.dumps(
         {"tool_name": str(call.get("name", "unknown_tool")), "args": call.get("args", {})},
@@ -136,6 +173,49 @@ def _request_key(call: dict[str, Any]) -> str:
 
 def _tool_label(tool_name: str) -> str:
     return _TOOL_LABELS.get(tool_name, "数据工具")
+
+
+def tool_label(tool_name: str) -> str:
+    """Return a product-safe Chinese label for a data tool."""
+    return _tool_label(tool_name)
+
+
+def build_direct_tool_ledger_entry(
+    tool_name: str,
+    args: dict[str, Any],
+    content: Any,
+    *,
+    analyst: str = "snapshot",
+    request_label: str | None = None,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int,
+) -> dict[str, Any]:
+    """Build one sanitized ledger entry for deterministic snapshot collection."""
+    status = classify_tool_result(content)
+    return {
+        "tool_name": tool_name,
+        "request_label": request_label or _tool_label(tool_name),
+        "analyst": analyst,
+        "status": status,
+        "critical": tool_name in BLOCKING_TOOLS,
+        "impact": "基础" if tool_name in BLOCKING_TOOLS else "分项",
+        "tool_call_id": "",
+        "request_key": make_request_key({"name": tool_name, "args": args}),
+        "recorded_at": finished_at,
+        "cache_hit": False,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": max(0, int(duration_ms)),
+    }
+
+
+def expected_tools_for_analysts(analysts: Iterable[str]) -> set[str]:
+    """返回本次分析范围内应覆盖的数据工具并集。"""
+    expected: set[str] = set()
+    for analyst in analysts:
+        expected.update(ANALYST_EXPECTED_TOOLS.get(str(analyst), set()))
+    return expected
 
 
 class RunToolCache:
@@ -170,7 +250,7 @@ class RunToolCache:
         function: Any,
     ) -> tuple[Any, dict[str, Any]]:
         """Return content plus non-sensitive cache/timing metadata."""
-        key = _request_key({"name": tool_name, "args": args})
+        key = make_request_key({"name": tool_name, "args": args})
         started_at = datetime.now(timezone.utc).isoformat()
         started = time.perf_counter()
 
@@ -281,7 +361,7 @@ def build_tool_ledger(
         )
         artifact = getattr(message, "artifact", None)
         metadata = artifact if isinstance(artifact, dict) else {}
-        request_key = _request_key(call)
+        request_key = make_request_key(call)
         if not metadata and cache is not None:
             metadata = cache.pop_failed_timing(request_key)
         ledger.append(
@@ -351,8 +431,15 @@ def create_tracked_tool_node(
     return invoke
 
 
-def summarize_tool_ledger(ledger: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """按相同请求的最后一次调用汇总，成功重试可覆盖之前的临时失败。"""
+def summarize_tool_ledger(
+    ledger: Iterable[dict[str, Any]],
+    expected_tools: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """按相同请求的最后一次调用汇总，成功重试可覆盖之前的临时失败。
+
+    ``expected_tools`` 由本次启用的分析角度决定。传入后，完全未调用的应采工具也会
+    降低可信度；不传时保留旧调用方只汇总已有台账的兼容行为。
+    """
     entries = list(ledger or [])
     latest_by_request: dict[str, dict[str, Any]] = {}
     for entry in entries:
@@ -361,6 +448,15 @@ def summarize_tool_ledger(ledger: Iterable[dict[str, Any]]) -> dict[str, Any]:
         latest_by_request[request_key] = entry
 
     latest = list(latest_by_request.values())
+    expected = set(expected_tools or [])
+    called_tools = {
+        str(entry.get("tool_name"))
+        for entry in latest
+        if entry.get("tool_name")
+    }
+    missing_tools = sorted(expected - called_tools)
+    missing_blocking = sorted(set(missing_tools) & BLOCKING_TOOLS)
+    missing_scoped = sorted(set(missing_tools) - BLOCKING_TOOLS)
     failed_blocking = sorted({
         entry["tool_name"]
         for entry in latest
@@ -385,21 +481,32 @@ def summarize_tool_ledger(ledger: Iterable[dict[str, Any]]) -> dict[str, Any]:
         domain_entries = [
             entry for entry in latest if entry.get("tool_name") in tool_names
         ]
-        if domain_entries and not any(
+        domain_is_expected = bool(expected & tool_names)
+        if (domain_entries or domain_is_expected) and not any(
             entry.get("status") in usable_statuses for entry in domain_entries
         ):
             unavailable_core_domains.append(domain)
 
-    failed_tools = failed_blocking + failed_scoped
+    failed_tools = failed_blocking + failed_scoped + missing_tools
     claim_constraints = [
         TOOL_CLAIM_CONSTRAINTS[name]
         for name in failed_tools
         if name in TOOL_CLAIM_CONSTRAINTS
     ]
 
-    if not entries or failed_blocking or len(unavailable_core_domains) >= 2:
+    if (
+        not entries
+        or failed_blocking
+        or missing_blocking
+        or len(unavailable_core_domains) >= 2
+    ):
         confidence = "低"
-    elif failed_scoped or unavailable_core_domains or invalid_inputs:
+    elif (
+        failed_scoped
+        or missing_scoped
+        or unavailable_core_domains
+        or invalid_inputs
+    ):
         confidence = "中"
     else:
         confidence = "高"
@@ -408,12 +515,18 @@ def summarize_tool_ledger(ledger: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "confidence": confidence,
         "attempt_count": len(entries),
         "latest": latest,
-        "status_counts": dict(Counter(entry.get("status") for entry in latest)),
+        "status_counts": {
+            **dict(Counter(entry.get("status") for entry in latest)),
+            **({STATUS_NOT_CALLED: len(missing_tools)} if missing_tools else {}),
+        },
         # 保留旧字段名，兼容已存在的调用方；语义已收窄为“全局基础失败”。
         "failed_critical": failed_blocking,
         "failed_noncritical": failed_scoped,
         "failed_blocking": failed_blocking,
         "failed_scoped": failed_scoped,
+        "missing_tools": missing_tools,
+        "missing_blocking": missing_blocking,
+        "missing_scoped": missing_scoped,
         "unavailable_core_domains": unavailable_core_domains,
         "claim_constraints": claim_constraints,
         "invalid_inputs": invalid_inputs,
@@ -437,6 +550,12 @@ def format_tool_ledger_summary(summary: dict[str, Any]) -> str:
         lines.append(
             "- 分项数据缺失：" + "、".join(
                 _tool_label(name) for name in summary["failed_scoped"]
+            )
+        )
+    if summary.get("missing_tools"):
+        lines.append(
+            "- 应采但未获取：" + "、".join(
+                _tool_label(name) for name in summary["missing_tools"]
             )
         )
     if summary["unavailable_core_domains"]:
@@ -463,7 +582,11 @@ def format_tool_ledger_summary(summary: dict[str, Any]) -> str:
             STATUS_NORMAL_EMPTY,
         }:
             status += "（复用本次已获取数据）"
-        lines.append(f"{_tool_label(entry['tool_name'])} | {status} | {importance}")
+        label = entry.get("request_label") or _tool_label(entry["tool_name"])
+        lines.append(f"{label} | {status} | {importance}")
+    for tool_name in summary.get("missing_tools", []):
+        importance = "基础" if tool_name in BLOCKING_TOOLS else "分项"
+        lines.append(f"{_tool_label(tool_name)} | 未获取 | {importance}")
     if summary["claim_constraints"]:
         lines.extend(["", "### 本次结论使用限制"])
         lines.extend(f"- {item}。" for item in summary["claim_constraints"])

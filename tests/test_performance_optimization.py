@@ -170,7 +170,13 @@ def test_fast_quality_gate_reviews_only_enabled_reports():
             {"tool_name": "get_stock_data", "status": "success"},
             {"tool_name": "get_indicators", "status": "success"},
             {"tool_name": "get_fundamentals", "status": "success"},
+            {"tool_name": "get_balance_sheet", "status": "success"},
+            {"tool_name": "get_cashflow", "status": "success"},
+            {"tool_name": "get_income_statement", "status": "success"},
+            {"tool_name": "get_profit_forecast", "status": "success"},
+            {"tool_name": "get_industry_comparison", "status": "success"},
             {"tool_name": "get_news", "status": "success"},
+            {"tool_name": "get_global_news", "status": "success"},
         ],
     }
 
@@ -180,7 +186,9 @@ def test_fast_quality_gate_reviews_only_enabled_reports():
     assert "以下是 3 位分析师" in prompts[0]
     assert "### 情绪分析师" not in prompts[0]
     assert result["data_quality_status"] == "高"
-    assert "快速分析" in result["data_quality_summary"]
+    assert result["data_completeness_status"] == "complete"
+    assert result["report_confidence_score"] == 4
+    assert "三项速览" in result["data_quality_summary"]
     assert "不得声称已全面核验" in result["data_quality_constraints"]
 
 
@@ -210,7 +218,8 @@ def test_fast_mode_is_saved_in_history_and_markdown(tmp_path, monkeypatch):
     )
 
     assert entries[0]["analysis_mode"] == "fast"
-    assert "快速分析（覆盖范围较少）" in markdown
+    assert "**分析范围**：三项速览" in markdown
+    assert "**数据状态**：关键数据缺失" in markdown
 
 
 def test_selected_analyst_branches_start_in_parallel_and_join(monkeypatch):
@@ -307,13 +316,18 @@ def test_selected_analyst_branches_start_in_parallel_and_join(monkeypatch):
     monkeypatch.setattr(setup_module, "create_neutral_debator", lambda llm: risk_node("Neutral"))
     monkeypatch.setattr(setup_module, "create_portfolio_manager", pm_factory)
 
-    unused_tool = lambda state, config=None: {"messages": []}
     selected = ["market", "news", "fundamentals"]
     graph_setup = GraphSetup(
         None,
         None,
-        {name: unused_tool for name in selected},
         ConditionalLogic(max_debate_rounds=1, max_risk_discuss_rounds=1),
+        snapshot_node=lambda state: {
+            "data_snapshot": {
+                "ticker": state["company_of_interest"],
+                "trade_date": state["trade_date"],
+                "records": [],
+            }
+        },
     )
     graph = graph_setup.setup_graph(selected).compile()
     initial = Propagator().create_initial_state(

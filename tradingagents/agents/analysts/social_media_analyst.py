@@ -1,17 +1,9 @@
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from tradingagents.agents.utils.agent_utils import build_instrument_context, get_language_instruction, get_news
-from tradingagents.dataflows.config import get_config
+from tradingagents.agents.analysts.snapshot_analysis import run_snapshot_analyst
+from tradingagents.agents.utils.agent_utils import get_language_instruction
 
 
 def create_social_media_analyst(llm):
     def social_media_analyst_node(state):
-        current_date = state["trade_date"]
-        instrument_context = build_instrument_context(state["company_of_interest"])
-
-        tools = [
-            get_news,
-        ]
-
         system_message = (
             "你是一位专注于 A 股市场的市场情绪分析师。你的任务是通过分析公司相关新闻、市场讨论和公众情绪，判断市场对目标公司的整体态度和情绪走向。"
             "\n\n⚠️ A 股情绪分析框架："
@@ -20,7 +12,7 @@ def create_social_media_analyst(llm):
             "\n- **情绪指标**：关注以下情绪信号 - 连续涨停后的追涨情绪、业绩暴雷后的恐慌抛售、机构调研后的预期变化、热门概念炒作的跟风程度。"
             "\n- **反向指标**：当市场情绪一致性过高（极度乐观或极度悲观）时，往往是反转信号。散户一致看多可能是阶段顶部。"
             "\n- **时间维度**：区分短期情绪波动（1-3 天，由单一事件驱动）和中期情绪趋势（1-4 周，由基本面变化驱动）。"
-            "\n\n请使用 `get_news(ticker, start_date, end_date)` 工具获取公司相关新闻和市场讨论，ticker 必须使用目标股票的 6 位代码。从新闻内容中推断市场情绪方向、强度和可能的转折点。"
+            "\n\n请读取代码预先采集的公司相关新闻，从已有新闻内容中推断市场情绪方向、强度和可能的转折点；快照未提供的网络讨论不得猜测。"
             "\n\n撰写详细的市场情绪分析报告，包含情绪评分（极度悲观/悲观/中性/乐观/极度乐观）和趋势判断。报告末尾附 Markdown 表格汇总情绪信号和结论。"
             "\n\n📋 必采清单 — 以下数据点必须出现在报告中，无法获取时标注 [数据缺失: xxx]："
             "\n1. 新闻检索条数和时间范围"
@@ -31,40 +23,12 @@ def create_social_media_analyst(llm):
             + get_language_instruction()
         )
 
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
-                    " Do not issue a final buy/sell instruction: you provide only one evidence-based research perspective."
-                    " Never treat missing data or a normal empty result as proof of a negative fact; say what cannot be verified."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
-                ),
-                MessagesPlaceholder(variable_name="messages"),
-            ]
+        return run_snapshot_analyst(
+            llm,
+            state,
+            analyst="social",
+            report_field="sentiment_report",
+            task_instructions=system_message,
         )
-
-        prompt = prompt.partial(system_message=system_message)
-        prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
-        prompt = prompt.partial(current_date=current_date)
-        prompt = prompt.partial(instrument_context=instrument_context)
-
-        chain = prompt | llm.bind_tools(tools)
-
-        result = chain.invoke(state["messages"])
-
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "sentiment_report": report,
-        }
 
     return social_media_analyst_node

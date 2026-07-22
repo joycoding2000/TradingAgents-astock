@@ -1,11 +1,11 @@
 # TradingAgents/graph/setup.py
 
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
+from tradingagents.agents.data_snapshot import create_data_snapshot_node
 from tradingagents.agents.utils.agent_states import AgentState
 
 from .conditional_logic import ConditionalLogic
@@ -33,28 +33,6 @@ def _isolated_analyst_node(node: Callable[..., dict], message_field: str):
         return {**outcome, "messages": messages, message_field: messages}
 
     return invoke
-
-
-def _isolated_tool_node(node: Callable[..., dict], message_field: str):
-    """Run ToolNode without exposing another analyst branch's messages."""
-    def invoke(state, config=None):
-        local_state = dict(state)
-        local_state["messages"] = state.get(message_field, [])
-        outcome = dict(node(local_state, config) or {})
-        messages = outcome.pop("messages", [])
-        return {**outcome, "messages": messages, message_field: messages}
-
-    return invoke
-
-
-def _analyst_router(message_field: str, tools_node: str, done_node: str):
-    def route(state):
-        messages = state.get(message_field, [])
-        if messages and getattr(messages[-1], "tool_calls", None):
-            return tools_node
-        return done_node
-
-    return route
 
 
 def _analyst_done_node(analyst: str):
@@ -94,14 +72,14 @@ class GraphSetup:
         self,
         quick_thinking_llm: Any,
         deep_thinking_llm: Any,
-        tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        snapshot_node: Callable[..., dict] | None = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
-        self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.snapshot_node = snapshot_node or create_data_snapshot_node()
 
     def setup_graph(self, selected_analysts=None):
         """Set up and compile the agent workflow graph.
@@ -122,49 +100,41 @@ class GraphSetup:
 
         # Create analyst nodes
         analyst_nodes = {}
-        tool_nodes = {}
 
         if "market" in selected_analysts:
             analyst_nodes["market"] = create_market_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["market"] = self.tool_nodes["market"]
 
         if "social" in selected_analysts:
             analyst_nodes["social"] = create_social_media_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["social"] = self.tool_nodes["social"]
 
         if "news" in selected_analysts:
             analyst_nodes["news"] = create_news_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["news"] = self.tool_nodes["news"]
 
         if "fundamentals" in selected_analysts:
             analyst_nodes["fundamentals"] = create_fundamentals_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
 
         if "policy" in selected_analysts:
             analyst_nodes["policy"] = create_policy_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["policy"] = self.tool_nodes["policy"]
 
         if "hot_money" in selected_analysts:
             analyst_nodes["hot_money"] = create_hot_money_tracker(
                 self.quick_thinking_llm
             )
-            tool_nodes["hot_money"] = self.tool_nodes["hot_money"]
 
         if "lockup" in selected_analysts:
             analyst_nodes["lockup"] = create_lockup_watcher(
                 self.quick_thinking_llm
             )
-            tool_nodes["lockup"] = self.tool_nodes["lockup"]
 
         # Create quality gate node
         quality_gate_node = create_quality_gate(self.quick_thinking_llm)
@@ -183,12 +153,20 @@ class GraphSetup:
 
         # Create workflow
         workflow = StateGraph(AgentState)
+        workflow.add_node(
+            "Data Snapshot",
+            timed_node(
+                "Data Snapshot",
+                self.snapshot_node,
+                stage="data_snapshot",
+                kind="stage",
+            ),
+        )
 
-        # Add isolated analyst branches. Each branch retains its own messages so
-        # concurrent ToolMessages can never be consumed by a different analyst.
+        # Add isolated analyst branches. They receive only the read-only snapshot
+        # and never enter a tool-call loop.
         for analyst_type, node in analyst_nodes.items():
             analyst_name = f"{analyst_type.capitalize()} Analyst"
-            tools_name = f"tools_{analyst_type}"
             done_name = f"Done {analyst_type.capitalize()}"
             message_field = _MESSAGE_FIELDS[analyst_type]
             workflow.add_node(
@@ -196,14 +174,6 @@ class GraphSetup:
                 timed_node(
                     analyst_name,
                     _isolated_analyst_node(node, message_field),
-                    stage=analyst_type,
-                ),
-            )
-            workflow.add_node(
-                tools_name,
-                timed_node(
-                    tools_name,
-                    _isolated_tool_node(tool_nodes[analyst_type], message_field),
                     stage=analyst_type,
                 ),
             )
@@ -227,24 +197,17 @@ class GraphSetup:
         workflow.add_node("Conservative Analyst", timed_node("Conservative Analyst", conservative_analyst, stage="risk", kind="stage"))
         workflow.add_node("Portfolio Manager", timed_node("Portfolio Manager", portfolio_manager_node, stage="pm", kind="stage"))
 
-        # Fan out all selected analysts from START and join only after every
-        # independent branch has produced its final report.
+        # Collect every required source once before any LLM runs. Analysts then
+        # fan out in parallel and can only read their immutable snapshot subset.
+        workflow.add_edge(START, "Data Snapshot")
         done_nodes = []
         for analyst_type in selected_analysts:
             current_analyst = f"{analyst_type.capitalize()} Analyst"
-            current_tools = f"tools_{analyst_type}"
             current_done = f"Done {analyst_type.capitalize()}"
-            message_field = _MESSAGE_FIELDS[analyst_type]
             done_nodes.append(current_done)
 
-            workflow.add_edge(START, current_analyst)
-
-            workflow.add_conditional_edges(
-                current_analyst,
-                _analyst_router(message_field, current_tools, current_done),
-                [current_tools, current_done],
-            )
-            workflow.add_edge(current_tools, current_analyst)
+            workflow.add_edge("Data Snapshot", current_analyst)
+            workflow.add_edge(current_analyst, current_done)
 
         workflow.add_edge(done_nodes, "Quality Gate")
 

@@ -63,6 +63,9 @@ class AgentState(MessagesState):
 
     analysis_mode: Annotated[str, "full or fast analysis mode"]
     selected_analysts: Annotated[list[str], "Analysts enabled for this run"]
+    data_snapshot: Annotated[
+        dict[str, Any], "Immutable deterministic source snapshot for this run"
+    ]
 
     # research step
     market_report: Annotated[str, "Report from the Market Analyst"]
@@ -78,6 +81,10 @@ class AgentState(MessagesState):
     # data quality gate
     data_quality_summary: Annotated[str, "Quality gate assessment of all analyst reports (hard checks + LLM review)"]
     data_quality_status: Annotated[str, "Code-enforced confidence cap: 高/中/低"]
+    data_completeness_status: Annotated[
+        str, "Product data status: complete/partial/critical_missing/unknown"
+    ]
+    report_confidence_score: Annotated[int, "User-facing report confidence: 0-5"]
     data_quality_constraints: Annotated[
         str, "Binding claim restrictions derived from failed data domains"
     ]

@@ -39,6 +39,7 @@ class Propagator:
             "past_context": past_context,
             "analysis_mode": analysis_mode,
             "selected_analysts": list(selected_analysts or []),
+            "data_snapshot": {},
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",
@@ -72,6 +73,8 @@ class Propagator:
             "lockup_report": "",
             "data_quality_summary": "",
             "data_quality_status": "",
+            "data_completeness_status": "unknown",
+            "report_confidence_score": 0,
             "data_quality_constraints": "",
             "tool_execution_ledger": [],
             "performance_ledger": [],

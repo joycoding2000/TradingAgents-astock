@@ -16,6 +16,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from tradingagents.dataflows.utils import safe_ticker_component
 
 
+# v0.2.29 replaced every analyst tool loop with a new snapshot-first topology.
+# Old checkpoints may reference removed node names and must never be resumed into
+# the new graph. Bumping this value creates a fresh thread namespace while leaving
+# completed result logs untouched.
+CHECKPOINT_SCHEMA_VERSION = 2
+
+
 def _db_path(data_dir: str | Path, ticker: str) -> Path:
     """Return the SQLite checkpoint DB path for a ticker."""
     # Reject ticker values that would escape the checkpoints directory.
@@ -26,8 +33,9 @@ def _db_path(data_dir: str | Path, ticker: str) -> Path:
 
 
 def thread_id(ticker: str, date: str) -> str:
-    """Deterministic thread ID for a ticker+date pair."""
-    return hashlib.sha256(f"{ticker.upper()}:{date}".encode()).hexdigest()[:16]
+    """Deterministic thread ID for a ticker+date and graph-schema pair."""
+    payload = f"v{CHECKPOINT_SCHEMA_VERSION}:{ticker.upper()}:{date}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 @contextmanager

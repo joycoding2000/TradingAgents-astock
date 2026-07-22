@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from tradingagents.agents.quality_ledger import (
+    expected_tools_for_analysts,
     format_claim_constraints,
     format_tool_ledger_summary,
     summarize_tool_ledger,
@@ -38,6 +39,35 @@ FAILURE_MARKERS = [
     "unable to fetch",
     "工具调用失败",
 ]
+
+
+def _product_quality_fields(
+    confidence: str,
+    analysis_mode: str,
+    selected_analysts: list[str],
+) -> dict[str, object]:
+    """生成供网页、历史列表和导出统一使用的通俗质量字段。"""
+    data_status = {
+        "高": "complete",
+        "中": "partial",
+        "低": "critical_missing",
+    }.get(confidence, "unknown")
+    full_scope = (
+        analysis_mode == "full"
+        and set(selected_analysts) == set(REPORT_FIELDS)
+    )
+    if confidence == "高":
+        score = 5 if full_scope else 4
+    elif confidence == "中":
+        score = 3 if full_scope else 2
+    elif confidence == "低":
+        score = 1
+    else:
+        score = 0
+    return {
+        "data_completeness_status": data_status,
+        "report_confidence_score": score,
+    }
 
 
 def _hard_check_report(analyst_type: str, report: str) -> tuple:
@@ -192,7 +222,11 @@ def create_quality_gate(llm):
             hard_summary_lines.append(f"- {name}: [{grade}] {detail}")
         hard_summary = "\n".join(hard_summary_lines)
 
-        tool_summary = summarize_tool_ledger(state.get("tool_execution_ledger", []))
+        expected_tools = expected_tools_for_analysts(selected_analysts)
+        tool_summary = summarize_tool_ledger(
+            state.get("tool_execution_ledger", []),
+            expected_tools=expected_tools,
+        )
         tool_ledger_text = format_tool_ledger_summary(tool_summary)
         data_quality_constraints = format_claim_constraints(tool_summary)
         omitted_analysts = [
@@ -240,11 +274,17 @@ def create_quality_gate(llm):
             )
 
         if analysis_mode == "fast":
-            scope_label = "快速分析（技术、新闻、基本面）"
+            scope_label = "三项速览（技术、新闻、基本面）"
         elif len(selected_analysts) == len(REPORT_FIELDS):
-            scope_label = "完整分析（七个研究角度）"
+            scope_label = "七项分析（七个研究角度）"
         else:
             scope_label = f"自选分析（{len(selected_analysts)} 个研究角度）"
+
+        product_fields = _product_quality_fields(
+            confidence,
+            analysis_mode,
+            selected_analysts,
+        )
 
         summary = (
             f"## 数据质量门控结果\n\n"
@@ -265,6 +305,7 @@ def create_quality_gate(llm):
             "data_quality_summary": summary,
             "data_quality_status": confidence,
             "data_quality_constraints": data_quality_constraints,
+            **product_fields,
         }
 
     return quality_gate_node

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 from tradingagents.llm_clients import create_llm_client
 
 from tradingagents.agents import *
+from tradingagents.agents.decision_validator import validate_final_decision
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.utils import safe_ticker_component
@@ -23,28 +24,7 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
-from tradingagents.agents.quality_ledger import RunToolCache, create_tracked_tool_node
 from tradingagents.dataflows.config import set_config
-
-# Import the new abstract tool methods from agent_utils
-from tradingagents.agents.utils.agent_utils import (
-    get_stock_data,
-    get_fundamentals,
-    get_balance_sheet,
-    get_cashflow,
-    get_income_statement,
-    get_news,
-    get_insider_transactions,
-    get_global_news,
-    get_profit_forecast,
-    get_hot_stocks,
-    get_northbound_flow,
-    get_concept_blocks,
-    get_fund_flow,
-    get_dragon_tiger_board,
-    get_lockup_expiry,
-    get_industry_comparison,
-)
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -128,13 +108,6 @@ class TradingAgentsGraph:
         
         self.memory_log = TradingMemoryLog(self.config)
 
-        # One cache exists only for this graph/run. It is cleared at prepare time
-        # and never crosses analyses, so realtime data cannot leak into another run.
-        self.tool_cache = RunToolCache()
-
-        # Create tool nodes
-        self.tool_nodes = self._create_tool_nodes()
-
         # Initialize components
         self.conditional_logic = ConditionalLogic(
             max_debate_rounds=self.config["max_debate_rounds"],
@@ -143,7 +116,6 @@ class TradingAgentsGraph:
         self.graph_setup = GraphSetup(
             self.quick_thinking_llm,
             self.deep_thinking_llm,
-            self.tool_nodes,
             self.conditional_logic,
         )
 
@@ -182,68 +154,6 @@ class TradingAgentsGraph:
                 kwargs["effort"] = effort
 
         return kwargs
-
-    def _create_tool_nodes(self) -> Dict[str, Any]:
-        """Create tracked tool nodes for different data sources."""
-        return {
-            "market": create_tracked_tool_node("market",
-                [
-                    # Core stock data tools (includes technical indicators via indicators="all")
-                    get_stock_data,
-                ], self.tool_cache
-            ),
-            "social": create_tracked_tool_node("social",
-                [
-                    # News tools for social media analysis
-                    get_news,
-                ], self.tool_cache
-            ),
-            "news": create_tracked_tool_node("news",
-                [
-                    # News and insider information
-                    get_news,
-                    get_global_news,
-                    get_insider_transactions,
-                ], self.tool_cache
-            ),
-            "fundamentals": create_tracked_tool_node("fundamentals",
-                [
-                    get_fundamentals,
-                    get_balance_sheet,
-                    get_cashflow,
-                    get_income_statement,
-                    get_profit_forecast,
-                    get_industry_comparison,
-                ], self.tool_cache
-            ),
-            "policy": create_tracked_tool_node("policy",
-                [
-                    get_news,
-                    get_global_news,
-                ], self.tool_cache
-            ),
-            "hot_money": create_tracked_tool_node("hot_money",
-                [
-                    get_stock_data,
-                    get_news,
-                    get_insider_transactions,
-                    get_hot_stocks,
-                    get_northbound_flow,
-                    get_concept_blocks,
-                    get_fund_flow,
-                    get_dragon_tiger_board,
-                    get_industry_comparison,
-                ], self.tool_cache
-            ),
-            "lockup": create_tracked_tool_node("lockup",
-                [
-                    get_insider_transactions,
-                    get_news,
-                    get_fundamentals,
-                    get_lockup_expiry,
-                ], self.tool_cache
-            ),
-        }
 
     @staticmethod
     def _detect_exchange(ticker: str) -> Optional[str]:
@@ -400,9 +310,7 @@ class TradingAgentsGraph:
         # Resolve any pending memory-log entries for this ticker before the pipeline runs.
         self._resolve_pending_entries(company_name)
 
-        # Start a clean run-local measurement/cache segment after reflection work.
-        if hasattr(self, "tool_cache"):
-            self.tool_cache.clear()
+        # Start a clean run-local measurement segment after reflection work.
         if hasattr(self, "model_timing"):
             self.model_timing.reset()
         self._run_started_at = datetime.now().astimezone().isoformat()
@@ -456,6 +364,9 @@ class TradingAgentsGraph:
 
     def finalize_graph_run(self, company_name, trade_date, final_state):
         """Persist a completed run and clear its checkpoint."""
+        # A result reaches this method only after the complete graph has returned.
+        # Keep process completion separate from analysis scope and data completeness.
+        final_state["analysis_completion_status"] = "completed"
         performance_ledger = final_state.setdefault("performance_ledger", [])
         if hasattr(self, "model_timing"):
             performance_ledger.extend(self.model_timing.snapshot())
@@ -472,6 +383,7 @@ class TradingAgentsGraph:
                 stage="pipeline",
             ))
 
+        final_state.update(validate_final_decision(final_state))
         self._apply_data_quality_limit(final_state)
         self.curr_state = final_state
 
@@ -481,6 +393,8 @@ class TradingAgentsGraph:
         decision_for_memory = final_state["final_trade_decision"]
         if final_state.get("data_quality_status") == "低":
             decision_for_memory = "关键数据未完整返回，本次未形成可执行结论。"
+        elif final_state.get("decision_validation_status") != "valid":
+            decision_for_memory = "最终结论未通过代码一致性校验，本次不形成经验记录。"
         memory_started_at = datetime.now().astimezone().isoformat()
         memory_started = time.perf_counter()
         self.memory_log.store_decision(
@@ -539,6 +453,8 @@ class TradingAgentsGraph:
         # instruction merely because the signal parser sees it.
         if final_state.get("data_quality_status") == "低":
             return "DataIncomplete"
+        if final_state.get("decision_validation_status") != "valid":
+            return "DecisionInvalid"
         return self.process_signal(final_state["final_trade_decision"])
 
     @staticmethod
@@ -589,6 +505,7 @@ class TradingAgentsGraph:
             "trade_date": final_state["trade_date"],
             "analysis_mode": final_state.get("analysis_mode", "full"),
             "selected_analysts": final_state.get("selected_analysts", FULL_ANALYSTS),
+            "data_snapshot": final_state.get("data_snapshot", {}),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
@@ -598,6 +515,19 @@ class TradingAgentsGraph:
             "lockup_report": final_state.get("lockup_report", ""),
             "data_quality_summary": final_state.get("data_quality_summary", ""),
             "data_quality_status": final_state.get("data_quality_status", ""),
+            "data_completeness_status": final_state.get(
+                "data_completeness_status", "unknown"
+            ),
+            "report_confidence_score": final_state.get(
+                "report_confidence_score", 0
+            ),
+            "analysis_completion_status": final_state.get(
+                "analysis_completion_status", "completed"
+            ),
+            "decision_validation_status": final_state.get(
+                "decision_validation_status", "unknown"
+            ),
+            "validated_decision": final_state.get("validated_decision", {}),
             "data_quality_constraints": final_state.get(
                 "data_quality_constraints", ""
             ),
